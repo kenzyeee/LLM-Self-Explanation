@@ -1,0 +1,5 @@
+Given the text below, highlight exactly 3 words that are most critical for determining its category ({label_set}).
+
+Text: "{input_text}"
+
+List the 3 critical words:

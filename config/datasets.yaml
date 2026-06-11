@@ -1,0 +1,36 @@
+# Dataset-Specific Configurations
+
+datasets:
+  sst2:
+    name: "sst2"
+    huggingface_id: "stanfordnlp/sst2"
+    split: "validation"
+    sample_size: 200
+    labels: ["negative", "positive"]
+    text_field: "sentence"
+    label_field: "label"
+    description: "Stanford Sentiment Treebank (binary classification)"
+    task_type: "sentiment_analysis"
+    
+  mnli:
+    name: "mnli"
+    huggingface_id: "nyu-mll/multi_nli"
+    split: "validation_matched"
+    sample_size: 200
+    labels: ["entailment", "neutral", "contradiction"]
+    text_field: "premise"
+    secondary_text_field: "hypothesis"
+    label_field: "label"
+    description: "Multi-Genre Natural Language Inference"
+    task_type: "natural_language_inference"
+    
+  ag_news:
+    name: "ag_news"
+    huggingface_id: "fancyzhx/ag_news"
+    split: "test"
+    sample_size: 200
+    labels: ["World", "Sports", "Business", "Sci/Tech"]
+    text_field: "text"
+    label_field: "label"
+    description: "AG News Topic Classification"
+    task_type: "topic_classification"

@@ -1,0 +1,5 @@
+Why does the following text belong to one of these categories: {label_set}?
+
+Text: "{input_text}"
+
+Explain in one sentence, focusing on specific evidence:

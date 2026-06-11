@@ -1,0 +1,5 @@
+Modify the text below to make it neutral or ambiguous in classification. Change as few words as possible.
+
+Original Text: "{input_text}"
+
+Modified Text:

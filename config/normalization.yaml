@@ -1,0 +1,51 @@
+# Normalization Configuration Variants
+
+# Default normalization configuration (v1.0)
+default:
+  version: "v1.0"
+  lowercase: true
+  remove_punctuation: true
+  remove_stopwords: true
+  use_lemmatization: true
+  stopword_language: "english"
+  lemmatizer: "wordnet"
+
+# Normalization variant: no lemmatization (v1.1)
+no_lemmatization:
+  version: "v1.1"
+  lowercase: true
+  remove_punctuation: true
+  remove_stopwords: true
+  use_lemmatization: false
+  stopword_language: "english"
+  lemmatizer: "wordnet"
+
+# Normalization variant: no stopword removal (v1.2)
+no_stopwords:
+  version: "v1.2"
+  lowercase: true
+  remove_punctuation: true
+  remove_stopwords: false
+  use_lemmatization: true
+  stopword_language: "english"
+  lemmatizer: "wordnet"
+
+# Normalization variant: minimal (v1.3)
+minimal:
+  version: "v1.3"
+  lowercase: true
+  remove_punctuation: true
+  remove_stopwords: false
+  use_lemmatization: false
+  stopword_language: "english"
+  lemmatizer: "wordnet"
+
+# Normalization variant: spaCy lemmatizer
+spacy_lemmatizer:
+  version: "v1.4"
+  lowercase: true
+  remove_punctuation: true
+  remove_stopwords: true
+  use_lemmatization: true
+  stopword_language: "english"
+  lemmatizer: "spacy"

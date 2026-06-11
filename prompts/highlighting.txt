@@ -1,0 +1,10 @@
+Classify the following text into one of these categories: {label_set}
+
+Text: "{input_text}"
+
+Identify the 3 most important tokens (words or phrases) that support your classification. List them in order of importance.
+
+Format your response as:
+1. [most important token]
+2. [second most important token]
+3. [third most important token]

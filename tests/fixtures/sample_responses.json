@@ -1,0 +1,65 @@
+{
+  "classification": {
+    "valid": [
+      "Prediction: positive\nConfidence: 85",
+      "Prediction: negative\nConfidence: 72%",
+      "Prediction: entailment\nConfidence: 90",
+      "Prediction: neutral\nConfidence: 0.65",
+      "Prediction: contradiction\nConfidence: 80",
+      "Prediction: World\nConfidence: 95%",
+      "Prediction: Sports\nConfidence: 60\n",
+      "Prediction: Business\nConfidence: 70"
+    ],
+    "invalid": [
+      "I think this is positive",
+      "The text is classified as negative with 85% confidence",
+      ""
+    ]
+  },
+  "highlighting": {
+    "valid": [
+      "1. great\n2. wonderful\n3. amazing",
+      "1. poorly\n2. terrible\n3. awful",
+      "1. \"excellent\"\n2. \"outstanding\"\n3. \"brilliant\"",
+      "1. 'beautiful'\n2. 'stunning'\n3. 'gorgeous'",
+      "1. first\n2. second\n3. third"
+    ],
+    "partial": [
+      "1. only\n2. two",
+      "1. justone"
+    ]
+  },
+  "rationale": {
+    "valid": [
+      "Prediction: positive\nRationale: The text uses positive language like 'great' and 'wonderful' which indicates a positive sentiment.",
+      "Rationale: This article discusses sports events and outcomes.",
+      "Prediction: entailment\nRationale: The hypothesis is directly supported by the premise.",
+      "The text expresses strong negative sentiment through words like 'terrible' and 'awful'."
+    ],
+    "no_rationale_label": [
+      "I don't have enough information to classify this text."
+    ]
+  },
+  "counterfactual": {
+    "valid": [
+      "Original Prediction: positive\nCounterfactual Text: The movie was terrible and boring.\nCounterfactual Prediction: negative",
+      "Original Prediction: negative\nCounterfactual Text: The product exceeded my expectations\nCounterfactual Prediction: positive",
+      "Counterfactual Text: The team won the championship game.\nCounterfactual Prediction: Sports"
+    ],
+    "inline": [
+      "The original text 'The movie was good' becomes 'The movie was bad' to flip the sentiment from positive to negative."
+    ]
+  },
+  "rank_ordering": {
+    "valid": [
+      "1. excellent\n2. wonderful\n3. amazing\n4. great\n5. superb",
+      "1. terrible\n2. awful\n3. horrible\n4. dreadful\n5. abysmal",
+      "1. \"win\"\n2. \"championship\"\n3. \"victory\"\n4. \"team\"\n5. \"score\"",
+      "1. economy\n2. growth\n3. market\n4. stocks\n5. inflation"
+    ],
+    "partial": [
+      "1. first\n2. second\n3. third",
+      "Most important: weather, Second: climate, Third: temperature"
+    ]
+  }
+}

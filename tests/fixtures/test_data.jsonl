@@ -1,0 +1,15 @@
+{"instance_id": "sst2_000000", "text": "This movie was absolutely wonderful and amazing.", "label": "positive", "dataset": "sst2", "split": "validation"}
+{"instance_id": "sst2_000001", "text": "A terrible boring waste of time.", "label": "negative", "dataset": "sst2", "split": "validation"}
+{"instance_id": "sst2_000002", "text": "The acting was superb and the cinematography breathtaking.", "label": "positive", "dataset": "sst2", "split": "validation"}
+{"instance_id": "sst2_000003", "text": "Disappointing and poorly executed throughout.", "label": "negative", "dataset": "sst2", "split": "validation"}
+{"instance_id": "sst2_000004", "text": "An average film with some good moments.", "label": "positive", "dataset": "sst2", "split": "validation"}
+{"instance_id": "mnli_000000", "text": "A person on a horse jumps over a broken down airplane. [SEP] A person is outdoors on a horse.", "label": "entailment", "dataset": "mnli", "split": "validation_matched"}
+{"instance_id": "mnli_000001", "text": "The children are playing in the park. [SEP] The children are at school.", "label": "contradiction", "dataset": "mnli", "split": "validation_matched"}
+{"instance_id": "mnli_000002", "text": "A soccer game with multiple players. [SEP] Some men are playing a sport.", "label": "entailment", "dataset": "mnli", "split": "validation_matched"}
+{"instance_id": "mnli_000003", "text": "A woman is cooking pasta. [SEP] A woman is preparing a meal.", "label": "entailment", "dataset": "mnli", "split": "validation_matched"}
+{"instance_id": "mnli_000004", "text": "The dog is sleeping on the couch. [SEP] The dog is running outside.", "label": "contradiction", "dataset": "mnli", "split": "validation_matched"}
+{"instance_id": "ag_news_000000", "text": "Wall Street rallied as tech stocks surged higher on Tuesday.", "label": "Business", "dataset": "ag_news", "split": "test"}
+{"instance_id": "ag_news_000001", "text": "Lakers defeat Celtics in overtime thriller.", "label": "Sports", "dataset": "ag_news", "split": "test"}
+{"instance_id": "ag_news_000002", "text": "Scientists discover new species in deep ocean trench.", "label": "Sci/Tech", "dataset": "ag_news", "split": "test"}
+{"instance_id": "ag_news_000003", "text": "Diplomatic tensions rise between major powers over trade.", "label": "World", "dataset": "ag_news", "split": "test"}
+{"instance_id": "ag_news_000004", "text": "New AI model achieves breakthrough in natural language understanding.", "label": "Sci/Tech", "dataset": "ag_news", "split": "test"}

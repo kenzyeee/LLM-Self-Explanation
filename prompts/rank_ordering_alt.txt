@@ -1,0 +1,5 @@
+For the text below, which tokens matter most for classification into {label_set}? Provide the top 5 in decreasing order of importance.
+
+Text: "{input_text}"
+
+Ranked tokens:

@@ -1,0 +1,23 @@
+Execution Summary
+=================
+Start Time: 2026-06-11 09:32:32
+End Time: 2026-06-11 09:33:34
+Duration: 62.60 seconds (1.04 minutes)
+
+Processing Statistics
+---------------------
+Total Instances: 9
+Successful: 9 (100.0%)
+Failed: 0 (0.0%)
+
+Failure Breakdown
+-----------------
+API Failures: 0
+Normalization Failures: 0
+Parsing Failures by Strategy:
+
+Performance Metrics
+-------------------
+Average Time per Instance: 0.00 seconds
+Total API Requests: 45
+Failed API Requests: 0 (0.0%)

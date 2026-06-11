@@ -1,0 +1,98 @@
+# Experiment Configuration
+experiment:
+  name: "llm-explanation-agreement-study-pilot"
+  version: "1.0"
+  seed: 42
+
+# Datasets
+datasets:
+  - name: "sst2"
+    huggingface_id: "stanfordnlp/sst2"
+    split: "validation"
+    sample_size: 3
+    labels: ["negative", "positive"]
+  - name: "mnli"
+    huggingface_id: "nyu-mll/multi_nli"
+    split: "validation_matched"
+    sample_size: 3
+    labels: ["entailment", "neutral", "contradiction"]
+  - name: "ag_news"
+    huggingface_id: "fancyzhx/ag_news"
+    split: "test"
+    sample_size: 3
+    labels: ["World", "Sports", "Business", "Sci/Tech"]
+
+# Models
+models:
+  - name: "llama-3.3-70b"
+    groq_model_id: "llama-3.3-70b-versatile"
+
+# Inference Settings
+inference:
+  temperature: 0
+  top_p: 1
+  max_tokens: 512
+  max_retries: 3
+  retry_delay_base: 2  # seconds
+  concurrent_requests: 5
+  request_timeout: 30  # seconds
+
+# Explanation Strategies
+explanation_strategies:
+  - id: "H"
+    name: "highlighting"
+    prompt_file: "prompts/highlighting.txt"
+    n_tokens: 3
+  - id: "R"
+    name: "rationale"
+    prompt_file: "prompts/rationale.txt"
+  - id: "CF"
+    name: "counterfactual"
+    prompt_file: "prompts/counterfactual.txt"
+  - id: "RO"
+    name: "rank_ordering"
+    prompt_file: "prompts/rank_ordering.txt"
+    n_tokens: 5
+
+# Normalization
+normalization:
+  version: "v1.0"
+  lowercase: true
+  remove_punctuation: true
+  remove_stopwords: true
+  use_lemmatization: true
+  stopword_language: "english"
+  lemmatizer: "wordnet"
+
+# Metrics
+metrics:
+  bootstrap_iterations: 1000
+  permutation_tests: 10000
+  confidence_level: 0.95
+  bonferroni_correction: true
+
+# Validity Testing
+validity:
+  masking_token: "[MASK]"
+  n_random_baseline_trials: 10
+
+# Ablation Studies
+ablations:
+  prompt_variants: true
+  normalization_variants: true
+  highlighting_k_values: [2, 3, 5]
+  subset_size: 50  # instances per dataset for ablations
+
+# Output
+output:
+  base_dir: "outputs"
+  checkpoint_frequency: 20  # instances
+  log_level: "INFO"
+  figure_dpi: 300
+  figure_formats: ["pdf", "png"]
+
+# Reproducibility
+reproducibility:
+  log_git_commit: true
+  log_package_versions: true
+  save_config_with_results: true
