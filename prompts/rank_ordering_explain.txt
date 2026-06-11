@@ -1,0 +1,10 @@
+The text was classified as: {predicted_label}
+
+Rank the 5 most important tokens (words or phrases) for this classification, from most important to least important.
+
+Format your response as:
+1. [most important token]
+2. [second most important token]
+3. [third most important token]
+4. [fourth most important token]
+5. [fifth most important token]

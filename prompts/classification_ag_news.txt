@@ -1,0 +1,9 @@
+Categorize the following news article into the appropriate topic.
+
+Article: "{input_text}"
+
+Choose from: World, Sports, Business, Sci/Tech
+
+Respond with:
+Prediction: [category]
+Confidence: [0-100]

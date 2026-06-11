@@ -342,6 +342,92 @@ Failed API Requests: {self.api_requests_failed} ({100 - api_success_rate:.1f}%)
         return report.strip()
 
 
+def generate_md_report(
+    aggregate_list: List[AggregateMetrics],
+    all_results: List[InstanceResult],
+    config,
+) -> str:
+    overall = next((m for m in aggregate_list if m.aggregation_level == "overall"), None)
+    model_dataset = [m for m in aggregate_list if m.aggregation_level == "model_dataset"]
+
+    lines = []
+    exp_name = config.experiment.name if hasattr(config, 'experiment') else "experiment"
+    lines.append(f"# Experiment Report: {exp_name}")
+    lines.append("")
+
+    if all_results:
+        t0 = min(r.timestamp for r in all_results)
+        t1 = max(r.timestamp for r in all_results)
+        dur = (t1 - t0).total_seconds()
+        lines.append(f"- **Date:** {t0.strftime('%Y-%m-%d %H:%M:%S')}")
+        lines.append(f"- **Duration:** {dur:.1f}s ({dur/60:.1f}m)")
+        lines.append(f"- **Model:** {all_results[0].model}")
+        lines.append(f"- **Total instances:** {len(all_results)}")
+
+    lines.append("")
+    lines.append("## Per-Dataset Summary")
+    lines.append("")
+    lines.append("| Dataset | Instances | Accuracy | Mean ECS | H | R | CF | RO |")
+    lines.append("|---------|-----------|----------|----------|---|---|------|---|")
+
+    for md in model_dataset:
+        parts = md.group_name.split("_", 1)
+        ds = parts[1] if len(parts) > 1 else md.group_name
+        model_name = parts[0] if len(parts) > 1 else ""
+        ds_results = [r for r in all_results if r.dataset == ds and (not model_name or r.model.startswith(model_name))]
+        correct = sum(1 for r in ds_results if r.correct)
+        acc = f"{correct}/{len(ds_results)} ({correct/max(len(ds_results),1)*100:.0f}%)" if ds_results else "—"
+        lines.append(
+            f"| {ds} | {md.n_instances} | {acc} | {md.mean_ecs:.3f} | "
+            f"{md.highlighting_success_rate*100:.0f}% | {md.rationale_success_rate*100:.0f}% | "
+            f"{md.counterfactual_success_rate*100:.0f}% | {md.rank_ordering_success_rate*100:.0f}% |"
+        )
+
+    if overall:
+        lines.append("")
+        lines.append("## Overall Metrics")
+        lines.append("")
+        lines.append("| Metric | Value |")
+        lines.append("|--------|-------|")
+        lines.append(f"| Mean ECS | {overall.mean_ecs:.4f} |")
+        lines.append(f"| Std ECS | {overall.std_ecs:.4f} |")
+        lines.append(f"| Median ECS | {overall.median_ecs:.4f} |")
+        lines.append(f"| Spearman ρ | {overall.spearman_rho:.4f} (p={overall.spearman_p_value:.4f}) |")
+        lines.append(f"| Mean CC3 size | {overall.mean_cc3_size:.2f} |")
+        lines.append(f"| Mean CC4 size | {overall.mean_cc4_size:.2f} |")
+        lines.append(f"| % instances with CC3 | {overall.pct_instances_with_cc3:.1f}% |")
+        lines.append(f"| % instances with CC4 | {overall.pct_instances_with_cc4:.1f}% |")
+
+        lines.append("")
+        lines.append("### Pairwise Jaccard Similarity")
+        lines.append("")
+        lines.append("| Pair | Mean |")
+        lines.append("|------|------|")
+        lines.append(f"| H–R | {overall.mean_jaccard_H_R:.4f} |")
+        lines.append(f"| H–CF | {overall.mean_jaccard_H_CF:.4f} |")
+        lines.append(f"| H–RO | {overall.mean_jaccard_H_RO:.4f} |")
+        lines.append(f"| R–CF | {overall.mean_jaccard_R_CF:.4f} |")
+        lines.append(f"| R–RO | {overall.mean_jaccard_R_RO:.4f} |")
+        lines.append(f"| CF–RO | {overall.mean_jaccard_CF_RO:.4f} |")
+
+    lines.append("")
+    lines.append("## Per-Instance Details")
+    lines.append("")
+    for r in all_results:
+        lines.append(f"### {r.instance_id}")
+        lines.append(f"- **Dataset:** {r.dataset}")
+        lines.append(f"- **Text:** {r.text[:120]}{'…' if len(r.text) > 120 else ''}")
+        lines.append(f"- **Ground truth:** `{r.ground_truth_label}`")
+        lines.append(f"- **Predicted:** `{r.predicted_label}`")
+        lines.append(f"- **Confidence:** {r.confidence * 100:.1f}%")
+        lines.append(f"- **Correct:** {'✓' if r.correct else '✗'}")
+        lines.append(f"- **ECS:** {r.ecs:.4f}" if r.ecs is not None else "- **ECS:** —")
+        lines.append(f"- **CC3 size:** {r.cc3_size} | **CC4 size:** {r.cc4_size}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def save_instance_results(results: List[InstanceResult], filepath: str) -> None:
     with open(filepath, 'w', encoding='utf-8') as f:
         for result in results:

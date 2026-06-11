@@ -1,7 +1,7 @@
 import os
 import asyncio
 import logging
-from typing import Set
+from typing import Set, List, Dict
 from dataclasses import dataclass
 from datetime import datetime
 from groq import AsyncGroq
@@ -82,6 +82,40 @@ class InferenceEngine:
     async def explain(self, prompt: str, strategy: str) -> ExplanationResult:
         raw_response = await self._make_request(prompt, max_tokens=512)
         return ExplanationResult(strategy=strategy, raw_response=raw_response, timestamp=datetime.now())
+
+    async def chat(self, messages: List[dict], max_tokens: int = 512) -> str:
+        if not self.client:
+            raise APIError("GROQ_API_KEY is not set.")
+        async with self.semaphore:
+            for attempt in range(self.max_retries + 1):
+                try:
+                    chat_completion = await self.client.chat.completions.create(
+                        messages=messages,
+                        model=self.model_name,
+                        temperature=0.0,
+                        top_p=1.0,
+                        max_tokens=max_tokens,
+                    )
+                    logger.info("Chat request successful", extra={
+                        'model': self.model_name, 'n_messages': len(messages), 'status': 'success'
+                    })
+                    return chat_completion.choices[0].message.content
+                except groq.RateLimitError as e:
+                    wait = 2 ** (attempt + 1)
+                    logger.warning(f"Rate limited, retrying in {wait}s (attempt {attempt+1}/{self.max_retries})")
+                    if attempt == self.max_retries:
+                        raise APIError(f"Rate limit exceeded after {self.max_retries} retries: {e}")
+                    await asyncio.sleep(wait)
+                except groq.APIError as e:
+                    if attempt == self.max_retries:
+                        logger.error("Chat request failed", extra={'error': str(e)})
+                        raise APIError(f"Chat request failed after {self.max_retries} retries: {e}")
+                    await asyncio.sleep(2 ** (attempt + 1))
+                except Exception as e:
+                    if attempt == self.max_retries:
+                        logger.error("Chat request failed", extra={'error': str(e)})
+                        raise APIError(f"Unexpected error during chat request: {e}")
+                    await asyncio.sleep(2 ** (attempt + 1))
 
     async def classify_with_mask(self, prompt: str, masked_tokens: Set[str]) -> ClassificationResult:
         raw_response = await self._make_request(prompt, max_tokens=50)

@@ -1,0 +1,7 @@
+Analyze the sentiment expressed in the following text.
+
+Text: "{input_text}"
+
+Respond with:
+Prediction: [positive or negative]
+Confidence: [0-100]

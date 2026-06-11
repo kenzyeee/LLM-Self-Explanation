@@ -1,0 +1,6 @@
+The text was classified as: {predicted_label}
+
+Provide a one-sentence rationale explaining why this classification is correct. Focus on the key evidence in the text.
+
+Format your response as:
+Rationale: [one sentence explanation]

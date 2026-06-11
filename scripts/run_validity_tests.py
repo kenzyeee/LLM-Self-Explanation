@@ -208,7 +208,11 @@ async def run_validity_tests(config, args):
 
     all_validity_results = []
     for instance_data in instances:
-        dataset_config = config.get_dataset_by_name(instance_data.get("dataset", ""))
+        dataset_name = instance_data.get("dataset", "")
+        ds_specific = Path(f"prompts/classification_{dataset_name}.txt")
+        if ds_specific.exists():
+            classification_prompt = ds_specific.read_text(encoding='utf-8')
+        dataset_config = config.get_dataset_by_name(dataset_name)
         label_set = dataset_config.labels if dataset_config else ["positive", "negative"]
 
         result = await process_validity_instance(instance_data, engine, classification_prompt, label_set)

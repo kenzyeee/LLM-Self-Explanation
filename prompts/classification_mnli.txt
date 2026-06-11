@@ -1,0 +1,9 @@
+Determine the logical relationship between the premise and the hypothesis.
+
+Premise [SEP] Hypothesis: "{input_text}"
+
+Does the premise entail the hypothesis, contradict it, or is it neutral?
+
+Respond with:
+Prediction: [entailment, neutral, or contradiction]
+Confidence: [0-100]

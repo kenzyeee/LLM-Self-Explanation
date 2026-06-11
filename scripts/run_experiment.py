@@ -17,7 +17,7 @@ from src.parsing.parser import Parser
 from src.normalization.normalizer import Normalizer
 from src.metrics.metrics_calculator import MetricsCalculator
 from src.utils.config_loader import load_and_validate_config, parse_command_line_args
-from src.utils.data_models import InstanceResult, AggregateMetrics, save_instance_results, save_aggregate_metrics
+from src.utils.data_models import InstanceResult, AggregateMetrics, save_instance_results, save_aggregate_metrics, generate_md_report
 from src.utils.checkpoint_manager import CheckpointManager
 from src.utils.execution_summary import ExecutionSummary
 from src.utils.exceptions import APIError, ParsingError
@@ -39,12 +39,24 @@ def format_prompt(template: str, input_text: str, label_set: List[str]) -> str:
     return template.format(input_text=input_text, label_set=", ".join(label_set))
 
 
-def create_prompt_map(config) -> Dict[str, str]:
+def format_explain_prompt(template: str, predicted_label: str) -> str:
+    return template.format(predicted_label=predicted_label)
+
+
+def create_prompt_map(config, dataset_name: str = None) -> Dict[str, str]:
     prompts = {}
     for strategy in config.explanation_strategies:
         prompt_text = load_prompt(strategy.prompt_file)
         prompts[strategy.id] = prompt_text
-    prompts["classification"] = load_prompt("prompts/classification.txt")
+        explain_file = strategy.prompt_file.replace(".txt", "_explain.txt")
+        prompts[f"{strategy.id}_explain"] = load_prompt(explain_file)
+
+    class_prompt_path = "prompts/classification.txt"
+    if dataset_name:
+        ds_specific = f"prompts/classification_{dataset_name}.txt"
+        if Path(ds_specific).exists():
+            class_prompt_path = ds_specific
+    prompts["classification"] = load_prompt(class_prompt_path)
     return prompts
 
 
@@ -82,11 +94,14 @@ async def process_instance(
         parsed_flags[strat_id] = False
 
     for strat_id in strategy_order:
-        prompt_template = prompts[strat_id]
-        strategy_prompt = format_prompt(prompt_template, text, label_set)
+        messages = [
+            {"role": "user", "content": class_prompt},
+            {"role": "assistant", "content": class_result.raw_response},
+            {"role": "user", "content": format_explain_prompt(prompts[f"{strat_id}_explain"], predicted_label)},
+        ]
         try:
-            result = await engine.explain(strategy_prompt, strat_id)
-            raw_responses[strat_id] = result.raw_response
+            raw = await engine.chat(messages, max_tokens=512)
+            raw_responses[strat_id] = raw
         except APIError as e:
             logger.error(f"API error for {instance_id} strategy {strat_id}: {e}")
             continue
@@ -100,6 +115,7 @@ async def process_instance(
                 tokens = parser.parse_highlighting(raw)
                 normalized = normalizer.normalize_tokens(tokens)
                 parsed_tokens[strat_id] = normalized
+                parsed_tokens["H_ordered"] = tokens
                 parsed_flags[strat_id] = len(tokens) > 0
             elif strat_id == "R":
                 rationale = parser.parse_rationale(raw)
@@ -117,11 +133,11 @@ async def process_instance(
                 normalized_set = normalizer.normalize_tokens(ro_tokens)
                 normalized_ranked = []
                 for token, rank in ranked:
-                    for word in token.split():
+                    words = token.split()
+                    for word in words:
                         n = normalizer.normalize(word)
                         if n:
                             normalized_ranked.append((n, rank))
-                            break
                 parsed_tokens["RO_set"] = normalized_set
                 parsed_tokens["RO_ranked"] = normalized_ranked
                 parsed_flags[strat_id] = len(ranked) > 0
@@ -139,6 +155,13 @@ async def process_instance(
     }
 
     agreements = calc.compute_pairwise_agreements(explanations)
+
+    # Compute Kendall tau between H (ordered) and RO (ranked)
+    h_ordered = parsed_tokens.get("H_ordered", [])
+    kendall_val = None
+    if h_ordered and ro_ranked:
+        h_ranks = calc.assign_implicit_ranks(h_ordered)
+        kendall_val = calc.compute_kendalls_tau(h_ranks, ro_ranked)
 
     result = InstanceResult(
         instance_id=instance_id,
@@ -168,6 +191,7 @@ async def process_instance(
         jaccard_R_CF=agreements.get(("R", "CF")),
         jaccard_R_RO=agreements.get(("R", "RO")),
         jaccard_CF_RO=agreements.get(("CF", "RO")),
+        kendall_H_RO=kendall_val,
         ecs=calc.compute_ecs(agreements),
     )
 
@@ -207,6 +231,19 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
 
     corr = compute_confidence_ecs_correlation(confidences, ecs_values, n_bootstrap=100)
 
+    # Bootstrap CI for mean ECS
+    if len(ecs_values) > 1:
+        boot_means = []
+        rng = np.random.default_rng(42)
+        for _ in range(1000):
+            sample = rng.choice(ecs_values, size=len(ecs_values), replace=True)
+            boot_means.append(float(np.mean(sample)))
+        ecs_ci_lower = float(np.percentile(boot_means, 2.5))
+        ecs_ci_upper = float(np.percentile(boot_means, 97.5))
+    else:
+        ecs_ci_lower = 0.0
+        ecs_ci_upper = 0.0
+
     def safe_mean(vals):
         return float(np.mean(vals)) if vals else 0.0
 
@@ -221,8 +258,8 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
         mean_ecs=safe_mean(ecs_values),
         std_ecs=float(np.std(ecs_values)) if len(ecs_values) > 1 else 0.0,
         median_ecs=float(np.median(ecs_values)) if ecs_values else 0.0,
-        ecs_ci_lower=corr.ci_lower,
-        ecs_ci_upper=corr.ci_upper,
+        ecs_ci_lower=ecs_ci_lower,
+        ecs_ci_upper=ecs_ci_upper,
         mean_jaccard_H_R=jaccard_mean('jaccard_H_R'),
         mean_jaccard_H_CF=jaccard_mean('jaccard_H_CF'),
         mean_jaccard_H_RO=jaccard_mean('jaccard_H_RO'),
@@ -295,13 +332,14 @@ async def run_experiment(config, args):
                 secondary_text_field=getattr(dataset_config, 'secondary_text_field', None),
                 dataset_name=dataset_name,
                 split=dataset_config.split,
+                label_names=dataset_config.labels if hasattr(dataset_config, 'labels') else None,
             )
             logger.info(f"Loaded {len(instances)} instances for {dataset_name}")
         except Exception as e:
             logger.error(f"Failed to load dataset {dataset_name}: {e}")
             continue
 
-        summary.total_instances += len(instances)
+        summary.total_instances += len(instances) * len(config.models)
 
         for model_config in config.models:
             logger.info(f"Processing model: {model_config.name} on {dataset_name}")
@@ -312,7 +350,7 @@ async def run_experiment(config, args):
                 concurrent_requests=config.inference.concurrent_requests,
             )
 
-            prompts = create_prompt_map(config)
+            prompts = create_prompt_map(config, dataset_name=dataset_name)
             model_results: List[InstanceResult] = []
 
             for i, instance in enumerate(instances):
@@ -351,9 +389,17 @@ async def run_experiment(config, args):
     summary.end_time = datetime.now()
     summary.duration_seconds = (summary.end_time - summary.start_time).total_seconds()
     summary.api_requests_total = len(all_results) * 5  # 1 class + 4 explanations
+    summary.api_requests_failed = summary.failed_instances * 5  # approximating 5 calls per failed instance
+    summary.avg_time_per_instance = summary.duration_seconds / max(len(all_results), 1)
 
     with open(output_dir / "execution_summary.txt", 'w') as f:
         f.write(summary.generate_report())
+
+    # Generate markdown report
+    report_md = generate_md_report(aggregate_list, all_results, config)
+    with open(output_dir / "report.md", 'w', encoding='utf-8') as f:
+        f.write(report_md)
+    logger.info(f"Report saved to {output_dir / 'report.md'}")
 
     logger.info(f"Experiment complete. Results saved to {output_dir}")
     logger.info(summary.generate_report())

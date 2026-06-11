@@ -65,10 +65,16 @@ class DatasetLoader:
 
     def sample_balanced(self, dataset, n_samples: int, label_field: str = "label",
                         text_field: str = "text", dataset_name: str = "", split: str = "",
-                        secondary_text_field: Optional[str] = None) -> List[Instance]:
+                        secondary_text_field: Optional[str] = None,
+                        label_names: List[str] = None) -> List[Instance]:
         labels_to_instances = {}
         for item in dataset:
-            label = str(item[label_field])
+            raw_label = str(item[label_field])
+            if label_names and raw_label.isdigit():
+                idx = int(raw_label)
+                label = label_names[idx] if 0 <= idx < len(label_names) else raw_label
+            else:
+                label = raw_label
             if label not in labels_to_instances:
                 labels_to_instances[label] = []
             text = str(item[text_field])
@@ -79,6 +85,9 @@ class DatasetLoader:
             )
 
         labels = sorted(labels_to_instances.keys())
+        if not labels:
+            logger.warning("No instances found for any label after filtering")
+            return []
         target_per_label = max(n_samples // len(labels), 1)
 
         available_per_label = [len(labels_to_instances[l]) for l in labels]
