@@ -24,6 +24,7 @@ class DatasetConfig:
     text_field: str = "text"
     secondary_text_field: Optional[str] = None
     label_field: str = "label"
+    cf_max_edit_ratio: float = 0.3
     description: Optional[str] = None
     task_type: Optional[str] = None
     def to_dict(self) -> Dict[str, Any]:

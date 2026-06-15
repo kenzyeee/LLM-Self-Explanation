@@ -1,6 +1,8 @@
+import csv
 import json
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
+from pathlib import Path
 from typing import Set, List, Tuple, Dict, Optional, Any
 
 
@@ -27,6 +29,24 @@ class InstanceResult:
     rationale_parsed: bool = False
     counterfactual_parsed: bool = False
     rank_ordering_parsed: bool = False
+    highlighting_valid: bool = False
+    rationale_valid: bool = False
+    counterfactual_valid: bool = False
+    rank_ordering_valid: bool = False
+    rationale_text: str = ""
+    ecs_primary: Optional[float] = None
+    cf_flip_verified: bool = False
+    cf_actual_label: str = ""
+    classification_prompt: str = ""
+    classification_raw_response: str = ""
+    highlighting_explain_prompt: str = ""
+    rationale_explain_prompt: str = ""
+    counterfactual_explain_prompt: str = ""
+    rank_ordering_explain_prompt: str = ""
+    model_refused: bool = False
+    prompt_tokens: int = 0
+    response_tokens: int = 0
+    prompt_hash: str = ""
     jaccard_H_R: Optional[float] = None
     jaccard_H_CF: Optional[float] = None
     jaccard_H_RO: Optional[float] = None
@@ -34,34 +54,52 @@ class InstanceResult:
     jaccard_R_RO: Optional[float] = None
     jaccard_CF_RO: Optional[float] = None
     kendall_H_RO: Optional[float] = None
+    normalized_kendall_H_RO: Optional[float] = None
     ecs: Optional[float] = None
+    ecs_primary_pairs: int = 0  # number of pairs used in Primary ECS
+    n_valid_strategies: int = 0  # number of valid strategies for CC computation
     cc3_tokens: Set[str] = field(default_factory=set)
     cc4_tokens: Set[str] = field(default_factory=set)
     cc3_size: int = 0
     cc4_size: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
-            'instance_id': self.instance_id, 'dataset': self.dataset, 'model': self.model,
-            'timestamp': self.timestamp.isoformat(),
-            'text': self.text, 'ground_truth_label': self.ground_truth_label,
-            'predicted_label': self.predicted_label, 'confidence': self.confidence, 'correct': self.correct,
-            'raw_highlighting': self.raw_highlighting, 'raw_rationale': self.raw_rationale,
-            'raw_counterfactual': self.raw_counterfactual, 'raw_rank_ordering': self.raw_rank_ordering,
-            'highlighting_tokens': sorted(list(self.highlighting_tokens)),
-            'rationale_tokens': sorted(list(self.rationale_tokens)),
-            'counterfactual_tokens': sorted(list(self.counterfactual_tokens)),
-            'rank_ordering_tokens': [[token, rank] for token, rank in self.rank_ordering_tokens],
-            'highlighting_parsed': self.highlighting_parsed, 'rationale_parsed': self.rationale_parsed,
-            'counterfactual_parsed': self.counterfactual_parsed, 'rank_ordering_parsed': self.rank_ordering_parsed,
-            'jaccard_H_R': self.jaccard_H_R, 'jaccard_H_CF': self.jaccard_H_CF,
-            'jaccard_H_RO': self.jaccard_H_RO, 'jaccard_R_CF': self.jaccard_R_CF,
-            'jaccard_R_RO': self.jaccard_R_RO, 'jaccard_CF_RO': self.jaccard_CF_RO,
-            'kendall_H_RO': self.kendall_H_RO,
-            'ecs': self.ecs,
-            'cc3_tokens': sorted(list(self.cc3_tokens)), 'cc4_tokens': sorted(list(self.cc4_tokens)),
-            'cc3_size': self.cc3_size, 'cc4_size': self.cc4_size,
-        }
+        base = {'instance_id': self.instance_id, 'dataset': self.dataset, 'model': self.model,
+                'timestamp': self.timestamp.isoformat(),
+                'text': self.text, 'ground_truth_label': self.ground_truth_label,
+                'predicted_label': self.predicted_label, 'confidence': self.confidence, 'correct': self.correct,
+                'raw_highlighting': self.raw_highlighting, 'raw_rationale': self.raw_rationale,
+                'raw_counterfactual': self.raw_counterfactual, 'raw_rank_ordering': self.raw_rank_ordering,
+                'highlighting_tokens': sorted(list(self.highlighting_tokens)),
+                'rationale_tokens': sorted(list(self.rationale_tokens)),
+                'counterfactual_tokens': sorted(list(self.counterfactual_tokens)),
+                'rank_ordering_tokens': [[token, rank] for token, rank in self.rank_ordering_tokens],
+                'highlighting_parsed': self.highlighting_parsed, 'rationale_parsed': self.rationale_parsed,
+                'counterfactual_parsed': self.counterfactual_parsed, 'rank_ordering_parsed': self.rank_ordering_parsed,
+                'highlighting_valid': self.highlighting_valid, 'rationale_valid': self.rationale_valid,
+                'counterfactual_valid': self.counterfactual_valid, 'rank_ordering_valid': self.rank_ordering_valid,
+                'rationale_text': self.rationale_text,
+                'classification_prompt': self.classification_prompt,
+                'classification_raw_response': self.classification_raw_response,
+                'highlighting_explain_prompt': self.highlighting_explain_prompt,
+                'rationale_explain_prompt': self.rationale_explain_prompt,
+                'counterfactual_explain_prompt': self.counterfactual_explain_prompt,
+                'rank_ordering_explain_prompt': self.rank_ordering_explain_prompt,
+                'model_refused': self.model_refused, 'prompt_tokens': self.prompt_tokens,
+                'response_tokens': self.response_tokens, 'prompt_hash': self.prompt_hash}
+        metrics = {'jaccard_H_R': self.jaccard_H_R, 'jaccard_H_CF': self.jaccard_H_CF,
+                   'jaccard_H_RO': self.jaccard_H_RO, 'jaccard_R_CF': self.jaccard_R_CF,
+                   'jaccard_R_RO': self.jaccard_R_RO, 'jaccard_CF_RO': self.jaccard_CF_RO,
+                   'kendall_H_RO': self.kendall_H_RO, 'normalized_kendall_H_RO': self.normalized_kendall_H_RO,
+                   'ecs': self.ecs, 'ecs_primary': self.ecs_primary,
+                   'ecs_primary_pairs': self.ecs_primary_pairs,
+                   'n_valid_strategies': self.n_valid_strategies,
+                   'cc3_tokens': sorted(list(self.cc3_tokens)), 'cc4_tokens': sorted(list(self.cc4_tokens)),
+                   'cc3_size': self.cc3_size, 'cc4_size': self.cc4_size,
+                   'cf_flip_verified': self.cf_flip_verified,
+                   'cf_actual_label': self.cf_actual_label}
+        base.update(metrics)
+        return base
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'InstanceResult':
@@ -76,15 +114,33 @@ class InstanceResult:
             rationale_tokens=set(data['rationale_tokens']),
             counterfactual_tokens=set(data['counterfactual_tokens']),
             rank_ordering_tokens=[(token, rank) for token, rank in data['rank_ordering_tokens']],
-            highlighting_parsed=data['highlighting_parsed'], rationale_parsed=data['rationale_parsed'],
-            counterfactual_parsed=data['counterfactual_parsed'], rank_ordering_parsed=data['rank_ordering_parsed'],
+            highlighting_parsed=data.get('highlighting_parsed', False), rationale_parsed=data.get('rationale_parsed', False),
+            counterfactual_parsed=data.get('counterfactual_parsed', False), rank_ordering_parsed=data.get('rank_ordering_parsed', False),
+            highlighting_valid=data.get('highlighting_valid', False), rationale_valid=data.get('rationale_valid', False),
+            counterfactual_valid=data.get('counterfactual_valid', False), rank_ordering_valid=data.get('rank_ordering_valid', False),
+            rationale_text=data.get('rationale_text', ''),
+            classification_prompt=data.get('classification_prompt', ''),
+            classification_raw_response=data.get('classification_raw_response', ''),
+            highlighting_explain_prompt=data.get('highlighting_explain_prompt', ''),
+            rationale_explain_prompt=data.get('rationale_explain_prompt', ''),
+            counterfactual_explain_prompt=data.get('counterfactual_explain_prompt', ''),
+            rank_ordering_explain_prompt=data.get('rank_ordering_explain_prompt', ''),
+            model_refused=data.get('model_refused', False),
+            prompt_tokens=data.get('prompt_tokens', 0),
+            response_tokens=data.get('response_tokens', 0),
+            prompt_hash=data.get('prompt_hash', ''),
             jaccard_H_R=data.get('jaccard_H_R'), jaccard_H_CF=data.get('jaccard_H_CF'),
             jaccard_H_RO=data.get('jaccard_H_RO'), jaccard_R_CF=data.get('jaccard_R_CF'),
             jaccard_R_RO=data.get('jaccard_R_RO'), jaccard_CF_RO=data.get('jaccard_CF_RO'),
             kendall_H_RO=data.get('kendall_H_RO'),
-            ecs=data.get('ecs'),
+            normalized_kendall_H_RO=data.get('normalized_kendall_H_RO'),
+            ecs=data.get('ecs'), ecs_primary=data.get('ecs_primary'),
+            ecs_primary_pairs=data.get('ecs_primary_pairs', 0),
+            n_valid_strategies=data.get('n_valid_strategies', 0),
             cc3_tokens=set(data['cc3_tokens']), cc4_tokens=set(data['cc4_tokens']),
             cc3_size=data['cc3_size'], cc4_size=data['cc4_size'],
+            cf_flip_verified=data.get('cf_flip_verified', False),
+            cf_actual_label=data.get('cf_actual_label', ''),
         )
 
 
@@ -105,6 +161,7 @@ class AggregateMetrics:
     mean_jaccard_R_RO: float
     mean_jaccard_CF_RO: float
     mean_kendall_H_RO: float
+    mean_normalized_kendall_H_RO: float
     mean_cc3_size: float
     mean_cc4_size: float
     pct_instances_with_cc3: float
@@ -117,6 +174,7 @@ class AggregateMetrics:
     rationale_success_rate: float
     counterfactual_success_rate: float
     rank_ordering_success_rate: float
+    mean_ecs_primary: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -267,6 +325,7 @@ class ExecutionSummary:
     total_instances: int
     successful_instances: int
     failed_instances: int
+    run_id: str = ""
     parsing_failures: Dict[str, int] = field(default_factory=dict)
     api_failures: int = 0
     normalization_failures: int = 0
@@ -282,6 +341,7 @@ class ExecutionSummary:
             'total_instances': self.total_instances,
             'successful_instances': self.successful_instances,
             'failed_instances': self.failed_instances,
+            'run_id': self.run_id,
             'parsing_failures': self.parsing_failures,
             'api_failures': self.api_failures,
             'normalization_failures': self.normalization_failures,
@@ -299,6 +359,7 @@ class ExecutionSummary:
             total_instances=data['total_instances'],
             successful_instances=data['successful_instances'],
             failed_instances=data['failed_instances'],
+            run_id=data.get('run_id', ''),
             parsing_failures=data.get('parsing_failures', {}),
             api_failures=data.get('api_failures', 0),
             normalization_failures=data.get('normalization_failures', 0),
@@ -313,6 +374,7 @@ class ExecutionSummary:
         report = f"""
 Execution Summary
 =================
+Run ID: {self.run_id}
 Start Time: {self.start_time.strftime('%Y-%m-%d %H:%M:%S')}
 End Time: {self.end_time.strftime('%Y-%m-%d %H:%M:%S')}
 Duration: {self.duration_seconds:.2f} seconds ({self.duration_seconds / 60:.2f} minutes)
@@ -359,10 +421,15 @@ def generate_md_report(
         t0 = min(r.timestamp for r in all_results)
         t1 = max(r.timestamp for r in all_results)
         dur = (t1 - t0).total_seconds()
+        n_refused = sum(1 for r in all_results if r.model_refused)
+        total_tokens = sum(r.prompt_tokens + r.response_tokens for r in all_results)
         lines.append(f"- **Date:** {t0.strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"- **Duration:** {dur:.1f}s ({dur/60:.1f}m)")
         lines.append(f"- **Model:** {all_results[0].model}")
         lines.append(f"- **Total instances:** {len(all_results)}")
+        lines.append(f"- **Model refusals:** {n_refused} ({n_refused/max(len(all_results),1)*100:.1f}%)")
+        lines.append(f"- **Total tokens processed:** {total_tokens}")
+        lines.append(f"- **Avg tokens per instance:** {total_tokens/max(len(all_results),1):.0f}")
 
     lines.append("")
     lines.append("## Per-Dataset Summary")
@@ -389,7 +456,17 @@ def generate_md_report(
         lines.append("")
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
-        lines.append(f"| Mean ECS | {overall.mean_ecs:.4f} |")
+        lines.append(f"| Mean ECS (full) | {overall.mean_ecs:.4f} |")
+        lines.append(f"| Mean ECS (primary: H,CF,RO) | {overall.mean_ecs_primary:.4f} |")
+
+        # Flag degenerate Primary ECS — instances where <3 pairs were used
+        reduced_primary = [r for r in all_results if r.ecs is not None and r.ecs_primary_pairs < 3]
+        if reduced_primary:
+            lines.append(f"| Primary ECS pairs <3 | {len(reduced_primary)} instances |")
+            for r in reduced_primary[:5]:
+                lines.append(f"  → {r.instance_id}: {r.ecs_primary_pairs} pair(s), ECS_primary={r.ecs_primary:.4f}")
+            if len(reduced_primary) > 5:
+                lines.append(f"  → ... and {len(reduced_primary)-5} more")
         lines.append(f"| Std ECS | {overall.std_ecs:.4f} |")
         lines.append(f"| Median ECS | {overall.median_ecs:.4f} |")
         lines.append(f"| Spearman ρ | {overall.spearman_rho:.4f} (p={overall.spearman_p_value:.4f}) |")
@@ -410,20 +487,144 @@ def generate_md_report(
         lines.append(f"| R–RO | {overall.mean_jaccard_R_RO:.4f} |")
         lines.append(f"| CF–RO | {overall.mean_jaccard_CF_RO:.4f} |")
 
+        lines.append("")
+        lines.append("### Validation Rates (strict)")
+        lines.append("")
+        lines.append("| Strategy | Parsed | Valid |")
+        lines.append("|----------|--------|-------|")
+        n_total = len(all_results)
+        h_parsed = sum(1 for r in all_results if r.highlighting_parsed)
+        h_valid = sum(1 for r in all_results if r.highlighting_valid)
+        r_parsed = sum(1 for r in all_results if r.rationale_parsed)
+        r_valid = sum(1 for r in all_results if r.rationale_valid)
+        cf_parsed = sum(1 for r in all_results if r.counterfactual_parsed)
+        cf_valid = sum(1 for r in all_results if r.counterfactual_valid)
+        ro_parsed = sum(1 for r in all_results if r.rank_ordering_parsed)
+        ro_valid = sum(1 for r in all_results if r.rank_ordering_valid)
+        lines.append(f"| Highlighting | {h_parsed}/{n_total} ({h_parsed/max(n_total,1)*100:.0f}%) | {h_valid}/{n_total} ({h_valid/max(n_total,1)*100:.0f}%) |")
+        lines.append(f"| Rationale | {r_parsed}/{n_total} ({r_parsed/max(n_total,1)*100:.0f}%) | {r_valid}/{n_total} ({r_valid/max(n_total,1)*100:.0f}%) |")
+        cf_verified = sum(1 for r in all_results if r.cf_flip_verified)
+        lines.append(f"| Counterfactual | {cf_parsed}/{n_total} ({cf_parsed/max(n_total,1)*100:.0f}%) | {cf_valid}/{n_total} ({cf_valid/max(n_total,1)*100:.0f}%) |")
+        lines.append(f"| CF flip verified | {cf_verified}/{cf_valid} ({cf_verified/max(cf_valid,1)*100:.0f}%) |")
+        lines.append(f"| Rank Ordering | {ro_parsed}/{n_total} ({ro_parsed/max(n_total,1)*100:.0f}%) | {ro_valid}/{n_total} ({ro_valid/max(n_total,1)*100:.0f}%) |")
+        lines.append(f"| All 4 valid | {sum(1 for r in all_results if r.n_valid_strategies == 4)}/{n_total} |")
+        lines.append(f"| 3 valid (CC3 adjusted) | {sum(1 for r in all_results if r.n_valid_strategies == 3)}/{n_total} |")
+        lines.append("")
+        lines.append("CC is computed over valid strategies only. When CF is missing, CC3-of-3 replaces CC4-of-4.")
+        lines.append("ECS is computed using validated outputs only. Primary ECS averages H–CF, H–RO, CF–RO (evidence-list methods). Full ECS includes all 6 pairwise Jaccards.")
+
+        lines.append("")
+        lines.append("### Confidence Intervals")
+        lines.append("")
+        lines.append("| Metric | Estimate | 95% CI |")
+        lines.append("|--------|----------|--------|")
+        lines.append(f"| Mean ECS | {overall.mean_ecs:.4f} | [{overall.ecs_ci_lower:.4f}, {overall.ecs_ci_upper:.4f}] |")
+        lines.append(f"| Spearman ρ | {overall.spearman_rho:.4f} | [{overall.correlation_ci_lower:.4f}, {overall.correlation_ci_upper:.4f}] |")
+
     lines.append("")
     lines.append("## Per-Instance Details")
     lines.append("")
     for r in all_results:
         lines.append(f"### {r.instance_id}")
-        lines.append(f"- **Dataset:** {r.dataset}")
-        lines.append(f"- **Text:** {r.text[:120]}{'…' if len(r.text) > 120 else ''}")
+        lines.append("")
+        lines.append("#### 1. Classification Prompt")
+        lines.append("```")
+        lines.append(r.classification_prompt)
+        lines.append("```")
+        lines.append("")
+        lines.append("#### 2. Classification Response")
+        lines.append("```")
+        lines.append(r.classification_raw_response)
+        lines.append("```")
+        lines.append("")
+        lines.append("#### 3. Ground Truth & Prediction")
         lines.append(f"- **Ground truth:** `{r.ground_truth_label}`")
-        lines.append(f"- **Predicted:** `{r.predicted_label}`")
+        lines.append(f"- **Predicted:** `{r.predicted_label}` {'✓' if r.correct else '✗'}")
         lines.append(f"- **Confidence:** {r.confidence * 100:.1f}%")
-        lines.append(f"- **Correct:** {'✓' if r.correct else '✗'}")
-        lines.append(f"- **ECS:** {r.ecs:.4f}" if r.ecs is not None else "- **ECS:** —")
+        lines.append(f"- **Model refused:** {'Yes' if r.model_refused else 'No'}")
+        lines.append(f"- **Prompt hash:** `{r.prompt_hash}`")
+        lines.append(f"- **ECS (full):** {r.ecs:.4f}" if r.ecs is not None else "- **ECS (full):** —")
+        lines.append(f"- **ECS (primary):** {r.ecs_primary:.4f}" if r.ecs_primary is not None else "- **ECS (primary):** —")
+        lines.append(f"- **ECS primary pairs:** {r.ecs_primary_pairs}")
+        lines.append(f"- **Valid strategies:** {r.n_valid_strategies}")
+        lines.append(f"- **CF flip verified:** {'Yes' if r.cf_flip_verified else 'No'}")
+        if r.cf_actual_label:
+            lines.append(f"- **CF actual label:** `{r.cf_actual_label}`")
         lines.append(f"- **CC3 size:** {r.cc3_size} | **CC4 size:** {r.cc4_size}")
         lines.append("")
+        strategy_info = [
+            ("H", "Highlighting", r.highlighting_explain_prompt, r.raw_highlighting,
+             r.highlighting_tokens, r.highlighting_valid, r.highlighting_parsed),
+            ("R", "Rationale", r.rationale_explain_prompt, r.raw_rationale,
+             r.rationale_tokens, r.rationale_valid, r.rationale_parsed),
+            ("CF", "Counterfactual", r.counterfactual_explain_prompt, r.raw_counterfactual,
+             r.counterfactual_tokens, r.counterfactual_valid, r.counterfactual_parsed),
+            ("RO", "Rank Ordering", r.rank_ordering_explain_prompt, r.raw_rank_ordering,
+             r.rank_ordering_tokens, r.rank_ordering_valid, r.rank_ordering_parsed),
+        ]
+        for sid, sname, sprompt, sraw, stokens, svalid, sparsed in strategy_info:
+            lines.append(f"#### 4. {sname} Explanation")
+            lines.append("")
+            lines.append("**Prompt:**")
+            lines.append("```")
+            lines.append(sprompt)
+            lines.append("```")
+            lines.append("")
+            lines.append("**Response:**")
+            lines.append("```")
+            lines.append(sraw)
+            lines.append("```")
+            lines.append("")
+            if sid == "R" and r.rationale_text:
+                lines.append("**Rationale text:**")
+                lines.append(f"> {r.rationale_text}")
+                lines.append("")
+            lines.append("**Parsed tokens:**")
+            if sparsed:
+                if svalid:
+                    status = "Valid"
+                else:
+                    status = "Parsed but failed validation"
+                lines.append(f"- Status: **{status}**")
+                if sid == "RO":
+                    token_list = ", ".join(f"`{t}`({r})" for t, r in stokens)
+                else:
+                    token_list = ", ".join(f"`{t}`" for t in sorted(stokens))
+                lines.append(f"- Tokens: {token_list}")
+            else:
+                lines.append("- *Not parsed*")
+            lines.append("")
+        lines.append("#### 5. Pairwise Agreement (Jaccard)")
+        lines.append("")
+        lines.append("| Pair | Jaccard |")
+        lines.append("|------|---------|")
+        j_pairs = [("H–R", "jaccard_H_R"), ("H–CF", "jaccard_H_CF"),
+                   ("H–RO", "jaccard_H_RO"), ("R–CF", "jaccard_R_CF"),
+                   ("R–RO", "jaccard_R_RO"), ("CF–RO", "jaccard_CF_RO")]
+        for label, attr in j_pairs:
+            val = getattr(r, attr, None)
+            lines.append(f"| {label} | {val:.4f} |" if val is not None else f"| {label} | — |")
+        kv = r.kendall_H_RO
+        nkv = r.normalized_kendall_H_RO
+        lines.append(f"| Kendall τ (H,RO) | {kv:.4f} |" if kv is not None else "| Kendall τ (H,RO) | — |")
+        lines.append(f"| Normalized τ | {nkv:.4f} |" if nkv is not None else "| Normalized τ | — |")
+        lines.append("")
+
+    # High/Low ECS case studies
+    extremes = extract_high_low_ecs_examples(all_results, n=3)
+    for category, label in [("high_ecs", "High-ECS Examples"), ("low_ecs", "Low-ECS Examples")]:
+        examples = extremes.get(category, [])
+        if examples:
+            lines.append("")
+            lines.append(f"## {label}")
+            lines.append("")
+            for r in examples:
+                lines.append(f"### {r.instance_id} (ECS={r.ecs:.4f})")
+                lines.append(f"- **Dataset:** {r.dataset}")
+                lines.append(f"- **Text:** {r.text[:200]}{'…' if len(r.text) > 200 else ''}")
+                lines.append(f"- **Ground truth:** `{r.ground_truth_label}` → **Predicted:** `{r.predicted_label}` {'✓' if r.correct else '✗'}")
+                lines.append(f"- **Confidence:** {r.confidence * 100:.1f}%")
+                lines.append("")
 
     return "\n".join(lines)
 
@@ -472,3 +673,70 @@ def load_validity_results(filepath: str) -> List[ValidityTestResult]:
                 data = json.loads(line)
                 results.append(ValidityTestResult.from_dict(data))
     return results
+
+
+def save_metrics_csv(results: List[InstanceResult], filepath: str) -> None:
+    if not results:
+        return
+    fieldnames = [
+        'instance_id', 'dataset', 'model', 'ground_truth_label', 'predicted_label',
+        'confidence', 'correct', 'model_refused', 'prompt_tokens', 'response_tokens',
+        'prompt_hash',
+        'jaccard_H_R', 'jaccard_H_CF', 'jaccard_H_RO', 'jaccard_R_CF', 'jaccard_R_RO', 'jaccard_CF_RO',
+        'kendall_H_RO', 'normalized_kendall_H_RO', 'ecs',
+        'cf_flip_verified', 'cf_actual_label',
+        'highlighting_parsed', 'rationale_parsed', 'counterfactual_parsed', 'rank_ordering_parsed',
+        'cc3_size', 'cc4_size',
+    ]
+    with open(filepath, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        for r in results:
+            writer.writerow(r.to_dict())
+
+
+def save_metadata_table(data: List[Dict[str, Any]], table_name: str, filepath: str) -> None:
+    metadata = {"table": table_name, "entries": data, "timestamp": datetime.now().isoformat()}
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2)
+
+
+def save_environment_snapshot(output_path: Path) -> None:
+    import subprocess
+    import importlib.metadata as md
+    snapshot = {}
+
+    # Git commit
+    try:
+        result = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            snapshot["git_commit"] = result.stdout.strip()
+        result = subprocess.run(["git", "log", "-1", "--format=%ai"], capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            snapshot["git_commit_date"] = result.stdout.strip()
+    except Exception:
+        snapshot["git_commit"] = "unknown"
+
+    # Python version
+    import sys as _sys
+    snapshot["python_version"] = f"{_sys.version_info.major}.{_sys.version_info.minor}.{_sys.version_info.micro}"
+
+    # Package versions
+    packages = {}
+    for dist in md.distributions():
+        name = dist.metadata.get("Name", "")
+        ver = dist.version
+        packages[name.lower()] = ver
+    snapshot["packages"] = packages
+
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(snapshot, f, indent=2)
+
+
+def extract_high_low_ecs_examples(results: List[InstanceResult], n: int = 5) -> Dict[str, List[InstanceResult]]:
+    valid = [r for r in results if r.ecs is not None]
+    valid.sort(key=lambda r: r.ecs)
+    low = valid[:n]
+    high = valid[-n:] if len(valid) >= n else valid[::-1]
+    high.reverse()
+    return {"high_ecs": high, "low_ecs": low}

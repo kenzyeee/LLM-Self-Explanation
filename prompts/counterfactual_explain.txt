@@ -1,8 +1,6 @@
 The text was classified as: {predicted_label}
 
-Create a minimal-edit counterfactual: modify the text as little as possible to change the classification to a different category. Only change the words that are most critical to the classification.
+Create a minimal-edit counterfactual: change no more than 2 words by substituting them with different words. Do not insert new words or delete existing words — only substitute. Do not modify punctuation, numbers, or HTML-encoded characters. The new_prediction must be one of: {other_labels}.
 
-Format your response as:
-Original Prediction: {predicted_label}
-Counterfactual Text: [the minimally modified text]
-Counterfactual Prediction: [the predicted label for the counterfactual]
+Return only valid JSON:
+{{"counterfactual_text":"<the minimally modified text>","new_prediction":"<flipped label>"}}

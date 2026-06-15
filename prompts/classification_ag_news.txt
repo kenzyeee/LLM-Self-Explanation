@@ -4,6 +4,5 @@ Article: "{input_text}"
 
 Choose from: World, Sports, Business, Sci/Tech
 
-Respond with:
-Prediction: [category]
-Confidence: [0-100]
+Return only valid JSON:
+{{"label":"World, Sports, Business, or Sci/Tech"}}

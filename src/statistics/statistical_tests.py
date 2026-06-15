@@ -56,6 +56,18 @@ def permutation_test(group1: List[float], group2: List[float], n_permutations: i
     return (count + 1) / (n_permutations + 1)
 
 
+def apply_bonferroni_correction(p_values: List[float], alpha: float = 0.05) -> List[float]:
+    n = len(p_values)
+    if n == 0:
+        return []
+    return [min(p * n, 1.0) for p in p_values]
+
+
+def are_significant(p_values: List[float], corrected: bool = True, alpha: float = 0.05) -> List[bool]:
+    adjusted = apply_bonferroni_correction(p_values, alpha) if corrected else p_values
+    return [p <= alpha for p in adjusted]
+
+
 def wilcoxon_signed_rank_test(group1: List[float], group2: List[float]) -> StatisticalTest:
     if len(group1) < 2 or len(group2) < 2:
         return StatisticalTest(t_statistic=0.0, p_value=1.0)

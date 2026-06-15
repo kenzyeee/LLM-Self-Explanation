@@ -1,0 +1,6 @@
+The text was classified as: {predicted_label}
+
+Create a counterfactual: change no more than 2 words by substituting them with different words. Focus your changes on the most topic-specific words — proper nouns, domain terms, or named entities that identify the topic. Do not insert new words or delete existing words — only substitute. Do not modify punctuation, numbers, or HTML-encoded characters. The new_prediction must be one of: {other_labels}.
+
+Return only valid JSON:
+{{"counterfactual_text":"<the minimally modified text>","new_prediction":"<flipped label>"}}

@@ -56,17 +56,20 @@ class TestAggregateMetrics:
             mean_jaccard_H_R=0.4, mean_jaccard_H_CF=0.3, mean_jaccard_H_RO=0.6,
             mean_jaccard_R_CF=0.2, mean_jaccard_R_RO=0.5, mean_jaccard_CF_RO=0.4,
             mean_kendall_H_RO=0.7,
+            mean_normalized_kendall_H_RO=0.85,
             mean_cc3_size=3.0, mean_cc4_size=1.0,
             pct_instances_with_cc3=0.8, pct_instances_with_cc4=0.5,
             spearman_rho=0.3, spearman_p_value=0.01,
             correlation_ci_lower=0.1, correlation_ci_upper=0.5,
             highlighting_success_rate=0.9, rationale_success_rate=0.85,
             counterfactual_success_rate=0.8, rank_ordering_success_rate=0.75,
+            mean_ecs_primary=0.45,
         )
         d = m.to_dict()
         restored = AggregateMetrics.from_dict(d)
         assert restored.mean_ecs == 0.5
         assert restored.group_name == "sst2"
+        assert restored.mean_ecs_primary == 0.45
 
 
 class TestValidityTestResult:
@@ -236,6 +239,7 @@ class TestConvenienceFunctions:
             mean_jaccard_H_R=0.4, mean_jaccard_H_CF=0.3, mean_jaccard_H_RO=0.6,
             mean_jaccard_R_CF=0.2, mean_jaccard_R_RO=0.5, mean_jaccard_CF_RO=0.4,
             mean_kendall_H_RO=0.7,
+            mean_normalized_kendall_H_RO=0.85,
             mean_cc3_size=3.0, mean_cc4_size=1.0,
             pct_instances_with_cc3=0.8, pct_instances_with_cc4=0.5,
             spearman_rho=0.3, spearman_p_value=0.01,

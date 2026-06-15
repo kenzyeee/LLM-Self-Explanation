@@ -9,17 +9,18 @@ datasets:
   - name: "sst2"
     huggingface_id: "stanfordnlp/sst2"
     split: "validation"
-    sample_size: 3
+    sample_size: 10
     labels: ["negative", "positive"]
   - name: "mnli"
     huggingface_id: "nyu-mll/multi_nli"
     split: "validation_matched"
-    sample_size: 3
+    sample_size: 10
     labels: ["entailment", "neutral", "contradiction"]
+    cf_max_edit_ratio: 0.8
   - name: "ag_news"
     huggingface_id: "fancyzhx/ag_news"
     split: "test"
-    sample_size: 3
+    sample_size: 10
     labels: ["World", "Sports", "Business", "Sci/Tech"]
 
 # Models
@@ -34,7 +35,7 @@ inference:
   max_tokens: 512
   max_retries: 3
   retry_delay_base: 2  # seconds
-  concurrent_requests: 5
+  concurrent_requests: 2
   request_timeout: 30  # seconds
 
 # Explanation Strategies

@@ -1,5 +1,8 @@
-Modify the text below to make it neutral or ambiguous in classification. Change as few words as possible.
+The text was classified as: {predicted_label}
+
+Modify the text below to change its classification. Change as few words as possible.
 
 Original Text: "{input_text}"
 
-Modified Text:
+Return only valid JSON:
+{{"counterfactual_text":"<modified text>","new_prediction":"<flipped label>"}}

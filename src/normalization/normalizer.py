@@ -1,6 +1,8 @@
 import re
+import html
 import string
 import logging
+import difflib
 from typing import List, Set, Optional
 
 try:
@@ -9,50 +11,75 @@ try:
     from nltk.stem import WordNetLemmatizer
     nltk.download('stopwords', quiet=True)
     nltk.download('wordnet', quiet=True)
-    nltk.download('punkt', quiet=True)
-    nltk.download('averaged_perceptron_tagger', quiet=True)
 except ImportError:
     pass
 
 logger = logging.getLogger(__name__)
 
+DISCOURSE_WORDS = {
+    "correct", "incorrect", "classification", "classify",
+    "text", "sentence", "passage", "article", "statement",
+    "indicates", "indicating", "indicated", "indicate",
+    "describes", "describing", "described", "describe",
+    "supports", "supporting", "supported", "support",
+    "based", "basing", "context", "contextual",
+    "prediction", "predict", "predicts",
+    "evidence", "explanation", "explain",
+    "important",
+    "positive", "negative", "neutral",
+    "entailment", "contradiction",
+    "world", "sports", "business", "sci/tech",
+    "us", "u",
+}
 
-class NormalizationConfig:
-    def __init__(self, use_lemmatization=True, remove_stopwords=True, lowercase=True, remove_punctuation=True):
-        self.use_lemmatization = use_lemmatization
-        self.remove_stopwords = remove_stopwords
-        self.lowercase = lowercase
-        self.remove_punctuation = remove_punctuation
+SEP_PATTERN = re.compile(r'\[SEP\]', re.IGNORECASE)
+HTML_ENTITY_PATTERN = re.compile(r'&[a-zA-Z]+;|&#\d+;')
 
 
 class Normalizer:
-    def __init__(self, config: NormalizationConfig = NormalizationConfig()):
-        self.config = config
-        self.lemmatizer = WordNetLemmatizer() if self.config.use_lemmatization else None
+    def __init__(self, use_lemmatization=True, remove_stopwords=True):
+        self.use_lemmatization = use_lemmatization
+        self.remove_stopwords = remove_stopwords
+        self.lemmatizer = WordNetLemmatizer() if use_lemmatization else None
         try:
-            self.stop_words = set(stopwords.words('english')) if self.config.remove_stopwords else set()
+            self.stop_words = set(stopwords.words('english')) if remove_stopwords else set()
         except Exception:
             self.stop_words = set()
 
+    def pre_normalize(self, token: str) -> str:
+        """Light normalization for input-anchored matching (no lemmatization)."""
+        t = token.strip().strip('\'"*')
+        t = t.lower()
+        t = t.strip(string.punctuation)
+        return t
+
     def normalize(self, token: str) -> Optional[str]:
+        """Full normalization pipeline for evidence tokens."""
         if not token:
             return None
-        token = token.strip()
-        if not token:
+        t = token.strip()
+        if not t:
             return None
-        if self.config.lowercase:
-            token = token.lower()
-        if self.config.remove_punctuation:
-            token = token.strip(string.punctuation)
-        if not token:
+
+        t = html.unescape(t)
+        t = SEP_PATTERN.sub('', t)
+        t = t.lower()
+        t = t.strip(string.punctuation)
+        if not t:
             return None
-        if self.config.remove_stopwords and token in self.stop_words:
+
+        if self.remove_stopwords and t in self.stop_words:
             return None
-        if self.config.use_lemmatization and self.lemmatizer:
-            token = self.lemmatizer.lemmatize(token)
-        return token if token else None
+        if t in DISCOURSE_WORDS:
+            return None
+
+        if self.use_lemmatization and self.lemmatizer:
+            t = self.lemmatizer.lemmatize(t)
+
+        return t if t else None
 
     def normalize_tokens(self, tokens: List[str]) -> Set[str]:
+        """Normalize a list of token strings. Splits multi-word spans into individual tokens."""
         result = set()
         for t in tokens:
             for word in t.split():
@@ -61,7 +88,54 @@ class Normalizer:
                     result.add(norm)
         return result
 
+    def normalize_input_text(self, text: str) -> str:
+        """Return canonical lowercase text for input-anchored matching."""
+        t = html.unescape(text)
+        t = SEP_PATTERN.sub(' ', t)
+        t = t.lower()
+        t = t.strip()
+        return t
+
+    def is_anchored(self, token: str, input_text: str) -> bool:
+        """Check if a token (after pre-normalization) appears in the input text."""
+        norm_token = self.pre_normalize(token)
+        if not norm_token:
+            return False
+        norm_input = self.normalize_input_text(input_text)
+        return norm_token in norm_input
+
+    def _exact_or_fuzzy_match(self, token: str, input_text: str) -> bool:
+        if token.lower() in input_text.lower():
+            return True
+        for input_word in input_text.lower().split():
+            ratio = difflib.SequenceMatcher(None, token.lower(), input_word).ratio()
+            if ratio >= 0.85:
+                return True
+        return False
+
+    def is_verbatim_in_input(self, token: str, input_text: str) -> bool:
+        """Check if a token appears verbatim in the input text (before lemmatization).
+        Uses exact substring match first, then fuzzy match with 0.85 threshold.
+        Returns True if match found."""
+        return self._exact_or_fuzzy_match(token, input_text)
+
+    def check_evidence_compliance(self, evidence_tokens: List[str], input_text: str) -> int:
+        """Count how many evidence tokens are NOT verbatim in input (compliance violations).
+        Uses exact match first, then fuzzy match at 0.85 threshold.
+        Returns number of violations. Logs warnings for each violation."""
+        violations = 0
+        for token in evidence_tokens:
+            if not self.is_verbatim_in_input(token, input_text):
+                logger.warning(f"Evidence compliance violation: '{token}' not verbatim in input")
+                violations += 1
+            else:
+                fuzzy_only = not (token.lower() in input_text.lower())
+                if fuzzy_only:
+                    logger.info(f"Evidence token '{token}' matched via fuzzy similarity (not exact)")
+        return violations
+
     def extract_content_words_from_rationale(self, rationale: str) -> Set[str]:
+        """Legacy method - kept for backward compatibility. Use extract_evidence_tokens instead."""
         try:
             from nltk.tokenize import word_tokenize
             from nltk import pos_tag
@@ -76,7 +150,13 @@ class Normalizer:
             return self.normalize_tokens(tokens)
 
     def extract_counterfactual_diff(self, original: str, counterfactual: str) -> Set[str]:
-        orig_tokens = set(original.lower().split())
-        cf_tokens = set(counterfactual.lower().split())
-        diff = (orig_tokens - cf_tokens) | (cf_tokens - orig_tokens)
+        orig_words = original.lower().split()
+        cf_words = counterfactual.lower().split()
+        min_len = min(len(orig_words), len(cf_words))
+        diff = []
+        for i in range(min_len):
+            if orig_words[i] != cf_words[i]:
+                diff.append(orig_words[i])
+        if len(cf_words) < len(orig_words):
+            diff.extend(orig_words[len(cf_words):])
         return self.normalize_tokens(list(diff))

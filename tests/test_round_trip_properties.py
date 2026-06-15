@@ -1,7 +1,7 @@
 import pytest
 from hypothesis import given, strategies as st, settings, HealthCheck
 from src.metrics.metrics_calculator import MetricsCalculator
-from src.normalization.normalizer import Normalizer, NormalizationConfig
+from src.normalization.normalizer import Normalizer
 
 
 calc = MetricsCalculator()
@@ -56,20 +56,27 @@ def test_kendall_tau_symmetry(tokens1, tokens2):
         assert tau1 == tau2
 
 
-@given(tokens=unique_token_list.filter(lambda x: len(x) >= 2))
+@given(tokens=unique_token_list.filter(lambda x: len(x) >= 4))
 @settings(max_examples=50)
 def test_kendall_tau_perfect_agreement(tokens):
     ranks = calc.assign_implicit_ranks(tokens)
     assert calc.compute_kendalls_tau(ranks, ranks) == pytest.approx(1.0)
 
 
-@given(tokens=unique_token_list.filter(lambda x: len(x) >= 3))
+@given(tokens=unique_token_list.filter(lambda x: len(x) >= 4))
 @settings(max_examples=50)
 def test_kendall_tau_reverse(tokens):
     ranks1 = calc.assign_implicit_ranks(tokens)
     ranks2 = calc.assign_implicit_ranks(list(reversed(tokens)))
     tau = calc.compute_kendalls_tau(ranks1, ranks2)
     assert tau == pytest.approx(-1.0)
+
+
+@given(tokens=unique_token_list.filter(lambda x: len(x) == 3))
+@settings(max_examples=10)
+def test_kendall_tau_few_common_returns_none(tokens):
+    ranks = calc.assign_implicit_ranks(tokens)
+    assert calc.compute_kendalls_tau(ranks, ranks) is None
 
 
 @given(s1=token_set, s2=token_set, s3=token_set, s4=token_set)

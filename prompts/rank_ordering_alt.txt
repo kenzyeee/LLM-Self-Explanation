@@ -1,5 +1,8 @@
-For the text below, which tokens matter most for classification into {label_set}? Provide the top 5 in decreasing order of importance.
+The text was classified as: {predicted_label}
+
+For the text below, list the 5 most important tokens for classification into {label_set}, in decreasing order of importance.
 
 Text: "{input_text}"
 
-Ranked tokens:
+Return only valid JSON:
+{{"ranking":["token1","token2","token3","token4","token5"]}}

@@ -1,5 +1,7 @@
+import html
 import logging
 import random
+import re
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass, field
@@ -78,8 +80,16 @@ class DatasetLoader:
             if label not in labels_to_instances:
                 labels_to_instances[label] = []
             text = str(item[text_field])
+            text = html.unescape(text)
+            # Catch orphaned numeric entities that lost their & prefix
+            text = re.sub(r'#(\d+);', lambda m: chr(int(m.group(1))), text)
+            text = re.sub(r'<[^>]+>', '', text)
             if secondary_text_field and secondary_text_field in item and item[secondary_text_field]:
-                text = f"{text} [SEP] {item[secondary_text_field]}"
+                secondary = str(item[secondary_text_field])
+                secondary = html.unescape(secondary)
+                secondary = re.sub(r'#(\d+);', lambda m: chr(int(m.group(1))), secondary)
+                secondary = re.sub(r'<[^>]+>', '', secondary)
+                text = f"Premise: {text}\nHypothesis: {secondary}"
             labels_to_instances[label].append(
                 Instance(text=text, label=label, dataset=dataset_name, split=split)
             )

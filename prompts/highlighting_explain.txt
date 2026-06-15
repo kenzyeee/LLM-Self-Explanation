@@ -1,8 +1,6 @@
 The text was classified as: {predicted_label}
 
-Identify the 3 most important tokens (words or phrases) that support this classification. List them in order of importance.
+Identify the 3 most important single tokens (words) from the input text that support this classification. List them in order of importance.
 
-Format your response as:
-1. [most important token]
-2. [second most important token]
-3. [third most important token]
+Return only valid JSON — each token must be copied verbatim from the input text:
+{{"highlights":["token1","token2","token3"]}}

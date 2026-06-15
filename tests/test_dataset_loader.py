@@ -211,9 +211,9 @@ class TestDatasetLoader:
         assert label_counts['1'] == 20
         assert label_counts['2'] == 20
         
-        # Verify secondary text field is combined with [SEP]
+        # Verify secondary text field is combined with labeled format
         for inst in instances:
-            assert '[SEP]' in inst.text
+            assert 'Premise:' in inst.text
             assert inst.text.startswith('Premise')
             assert 'Hypothesis' in inst.text
     

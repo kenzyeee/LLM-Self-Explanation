@@ -1,0 +1,6 @@
+The text was classified as: {predicted_label}
+
+The input has two parts: a Premise and a Hypothesis. Your counterfactual must include BOTH the Premise and the Hypothesis, preserving their structure. Change no more than 2 words total across either part by substituting them with different words. Do not insert new words or delete existing words — only substitute. Do not modify punctuation, numbers, or HTML-encoded characters. The new_prediction must be one of: {other_labels}.
+
+Return only valid JSON:
+{{"counterfactual_text":"<the minimally modified text with both Premise and Hypothesis>","new_prediction":"<flipped label>"}}

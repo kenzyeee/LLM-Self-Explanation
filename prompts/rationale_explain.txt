@@ -1,6 +1,6 @@
 The text was classified as: {predicted_label}
 
-Provide a one-sentence rationale explaining why this classification is correct. Focus on the key evidence in the text.
+Provide a one-sentence rationale explaining why this classification is correct. Then list no more than 5 individual single words from the input text that serve as evidence. Each evidence item must be a single word copied verbatim from the input — no phrases, no clauses, no sentences.
 
-Format your response as:
-Rationale: [one sentence explanation]
+Return only valid JSON:
+{{"rationale":"<one sentence explanation>","evidence":["word","word","word","word","word"]}}

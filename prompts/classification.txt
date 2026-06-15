@@ -2,6 +2,5 @@ Classify the following text into one of these categories: {label_set}
 
 Text: "{input_text}"
 
-Provide your answer in this format:
-Prediction: [your predicted label]
-Confidence: [a number from 0 to 100 indicating how confident you are]
+Return only valid JSON:
+{{"label":"<one of: {label_set}>"}}

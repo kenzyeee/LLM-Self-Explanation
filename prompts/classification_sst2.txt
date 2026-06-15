@@ -2,6 +2,5 @@ Analyze the sentiment expressed in the following text.
 
 Text: "{input_text}"
 
-Respond with:
-Prediction: [positive or negative]
-Confidence: [0-100]
+Return only valid JSON:
+{{"label":"positive or negative"}}

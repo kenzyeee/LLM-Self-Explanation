@@ -38,29 +38,29 @@ class TestMetricsCalculator:
         assert calc.assign_implicit_ranks([]) == []
 
     def test_kendall_tau_perfect_agreement(self, calc):
-        ranks = [("a", 1), ("b", 2), ("c", 3)]
+        ranks = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
         assert calc.compute_kendalls_tau(ranks, ranks) == 1.0
 
     def test_kendall_tau_negative(self, calc):
-        # a has rank 3 in ranks2 (vs 1 in ranks1), so negative correlation
-        ranks1 = [("a", 1), ("b", 2), ("c", 3)]
-        ranks2 = [("a", 3), ("b", 2), ("c", 1)]
+        # a has rank 4 in ranks2 (vs 1 in ranks1), so negative correlation
+        ranks1 = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+        ranks2 = [("a", 4), ("b", 3), ("c", 2), ("d", 1)]
         tau = calc.compute_kendalls_tau(ranks1, ranks2)
-        assert tau < 0
+        assert tau is not None and tau < 0
 
     def test_kendall_tau_no_common_tokens(self, calc):
-        ranks1 = [("a", 1), ("b", 2)]
-        ranks2 = [("c", 1), ("d", 2)]
-        assert calc.compute_kendalls_tau(ranks1, ranks2) == 0.0
+        ranks1 = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+        ranks2 = [("e", 1), ("f", 2), ("g", 3), ("h", 4)]
+        assert calc.compute_kendalls_tau(ranks1, ranks2) is None
 
-    def test_kendall_tau_single_common(self, calc):
-        ranks1 = [("a", 1)]
-        ranks2 = [("a", 2)]
-        assert calc.compute_kendalls_tau(ranks1, ranks2) == 0.0
+    def test_kendall_tau_few_common_returns_none(self, calc):
+        ranks1 = [("a", 1), ("b", 2), ("c", 3)]
+        ranks2 = [("a", 2), ("b", 1), ("d", 3)]
+        assert calc.compute_kendalls_tau(ranks1, ranks2) is None
 
     def test_kendall_tau_symmetry(self, calc):
-        ranks1 = [("a", 1), ("b", 2), ("c", 3)]
-        ranks2 = [("a", 2), ("b", 1), ("c", 3)]
+        ranks1 = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+        ranks2 = [("a", 2), ("b", 1), ("c", 3), ("d", 4)]
         tau1 = calc.compute_kendalls_tau(ranks1, ranks2)
         tau2 = calc.compute_kendalls_tau(ranks2, ranks1)
         assert tau1 == tau2
@@ -97,7 +97,7 @@ class TestMetricsCalculator:
         assert 0.0 < ecs <= 0.5
 
     def test_ecs_no_agreements(self, calc):
-        assert calc.compute_ecs({}) == 0.0
+        assert calc.compute_ecs({}) is None
 
     def test_consensus_core_cc3(self, calc):
         explanations = {

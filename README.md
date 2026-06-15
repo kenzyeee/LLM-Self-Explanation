@@ -91,14 +91,14 @@ See `python scripts/run_experiment.py --help` for all CLI options.
 
 ## Key Metrics
 
-| Metric | Description |
-|--------|-------------|
-| **ECS** | Explanation Consensus Score -- mean of 6 pairwise Jaccard similarities across 4 strategies |
-| **CC3** | Consensus Core 3 -- tokens appearing in >=3 of 4 strategies |
-| **CC4** | Consensus Core 4 -- tokens appearing in all 4 strategies |
-| **Jaccard** | Token-set overlap between any two strategies |
-| **Kendall's tau** | Rank correlation between ordered token lists (H, RO) |
-| **Flip rate** | Rate at which masking consensus-core tokens changes the model's prediction |
+| Metric                  | Description                                                                                |
+| ----------------------- | ------------------------------------------------------------------------------------------ |
+| **ECS**           | Explanation Consensus Score -- mean of 6 pairwise Jaccard similarities across 4 strategies |
+| **CC3**           | Consensus Core 3 -- tokens appearing in >=3 of 4 strategies                                |
+| **CC4**           | Consensus Core 4 -- tokens appearing in all 4 strategies                                   |
+| **Jaccard**       | Token-set overlap between any two strategies                                               |
+| **Kendall's tau** | Rank correlation between ordered token lists (H, RO)                                       |
+| **Flip rate**     | Rate at which masking consensus-core tokens changes the model's prediction                 |
 
 ## Development
 
