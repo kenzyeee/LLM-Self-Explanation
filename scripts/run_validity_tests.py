@@ -45,6 +45,8 @@ def build_masked_text(text: str, tokens_to_mask: set, mask_token: str = "[MASK]"
 
 def random_token_selection(text: str, n: int) -> list:
     words = list(set(text.split()))
+    if not words or n <= 0:
+        return []
     if n >= len(words):
         return words
     return list(np.random.choice(words, n, replace=False))
@@ -130,9 +132,11 @@ def compute_aggregate_validity(results: List[ValidityTestResult]) -> AggregateVa
 
     cc3_flips = [1 if r.cc3_flipped else 0 for r in results if r.cc3_tokens]
     random_flips = [1 if r.random_flipped else 0 for r in results if r.random_tokens]
+    cc4_flips = [1 if r.cc4_flipped else 0 for r in results if r.cc4_tokens]
 
     cc3_rate = np.mean(cc3_flips) if cc3_flips else 0
     random_rate = np.mean(random_flips) if random_flips else 0
+    cc4_rate = np.mean(cc4_flips) if cc4_flips else 0
 
     if len(cc3_flips) > 1 and len(random_flips) > 1:
         min_len = min(len(cc3_flips), len(random_flips))
@@ -147,20 +151,24 @@ def compute_aggregate_validity(results: List[ValidityTestResult]) -> AggregateVa
     n_bootstrap = 1000
     cc3_rates = []
     random_rates = []
-    n = len(cc3_flips)
-    for _ in range(n_bootstrap):
-        idx = np.random.choice(n, n, replace=True)
-        boot_cc3 = [cc3_flips[i] for i in idx]
-        boot_random = [random_flips[i % len(random_flips)] for i in idx]
-        cc3_rates.append(np.mean(boot_cc3))
-        random_rates.append(np.mean(boot_random))
+    if cc3_flips and random_flips:
+        n = len(cc3_flips)
+        for _ in range(n_bootstrap):
+            idx = np.random.choice(n, n, replace=True)
+            boot_cc3 = [cc3_flips[i] for i in idx]
+            boot_random = [random_flips[i % len(random_flips)] for i in idx]
+            cc3_rates.append(np.mean(boot_cc3))
+            random_rates.append(np.mean(boot_random))
+    else:
+        cc3_rates = [0.0]
+        random_rates = [0.0]
 
     return AggregateValidityResults(
         dataset=results[0].dataset,
         model=results[0].model,
         n_instances=len(results),
         cc3_flip_rate=float(cc3_rate),
-        cc4_flip_rate=float(np.mean([1 if r.cc4_flipped else 0 for r in results if r.cc4_tokens])),
+        cc4_flip_rate=float(cc4_rate),
         random_flip_rate=float(random_rate),
         t_statistic=float(t_stat),
         p_value=float(p_val),

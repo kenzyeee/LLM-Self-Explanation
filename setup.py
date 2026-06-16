@@ -24,9 +24,7 @@ setup(
     description="Research pipeline for investigating cross-strategy agreement among LLM self-explanations",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    author="Your Name",
-    author_email="your.email@example.com",
-    url="https://github.com/yourusername/llm-explanation-agreement",
+    author="LLM Explanation Agreement Study Contributors",
     license="MIT",
     
     # Package configuration
@@ -41,6 +39,7 @@ setup(
     extras_require={
         "dev": [
             "pytest>=7.4.0",
+            "pytest-asyncio>=0.21.0",
             "pytest-cov>=4.1.0",
             "hypothesis>=6.82.0",
             "black>=23.0.0",
@@ -58,13 +57,10 @@ setup(
     entry_points={
         "console_scripts": [
             "llm-explain=scripts.run_experiment:main",
-            "llm-prepare-data=scripts.prepare_data:main",
-            "llm-inference=scripts.run_inference:main",
-            "llm-compute-metrics=scripts.compute_metrics:main",
+            "llm-ablations=scripts.run_ablations:main",
             "llm-validity-tests=scripts.run_validity_tests:main",
-            "llm-statistics=scripts.compute_statistics:main",
-            "llm-plots=scripts.generate_plots:main",
-            "llm-paper=scripts.generate_paper:main",
+            "llm-analyze=scripts.analyze_results:main",
+            "llm-show-results=scripts.show_results:main",
         ],
     },
     
@@ -89,13 +85,6 @@ setup(
             "config/*.yaml",
             "prompts/*.txt",
         ],
-    },
-    
-    # Project URLs
-    project_urls={
-        "Bug Reports": "https://github.com/yourusername/llm-explanation-agreement/issues",
-        "Source": "https://github.com/yourusername/llm-explanation-agreement",
-        "Documentation": "https://llm-explanation-agreement.readthedocs.io",
     },
     
     # Keywords for PyPI
