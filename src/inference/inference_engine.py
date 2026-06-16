@@ -1,15 +1,25 @@
 import os
 import asyncio
 import logging
-from typing import Set, List, Dict
+from typing import Set, List
 from dataclasses import dataclass
 from datetime import datetime
-from groq import AsyncGroq
-import groq
 
 from src.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
+
+
+def _load_groq():
+    try:
+        import groq
+        return groq
+    except ImportError as e:
+        raise APIError("The 'groq' package is required for API requests. Install dependencies with 'pip install -r requirements.txt'.") from e
+
+
+class _PendingGroqClient:
+    pass
 
 
 @dataclass
@@ -35,14 +45,22 @@ class InferenceEngine:
         self.max_retries = max_retries
         self.request_timeout = request_timeout
         self.semaphore = asyncio.Semaphore(concurrent_requests)
+        self.groq = None
         if self.api_key:
-            self.client = AsyncGroq(api_key=self.api_key)
+            self.client = _PendingGroqClient()
         else:
             self.client = None
 
-    async def _make_request(self, prompt: str, max_tokens: int = 512, max_retries: int = None) -> str:
+    def _ensure_client(self):
         if not self.client:
             raise APIError("GROQ_API_KEY is not set.")
+        if isinstance(self.client, _PendingGroqClient):
+            self.groq = _load_groq()
+            self.client = self.groq.AsyncGroq(api_key=self.api_key)
+        return self.groq or _load_groq()
+
+    async def _make_request(self, prompt: str, max_tokens: int = 512, max_retries: int = None) -> str:
+        groq = self._ensure_client()
         retries = max_retries if max_retries is not None else self.max_retries
         async with self.semaphore:
             for attempt in range(retries + 1):
@@ -84,8 +102,7 @@ class InferenceEngine:
         return ExplanationResult(strategy=strategy, raw_response=raw_response, timestamp=datetime.now())
 
     async def chat(self, messages: List[dict], max_tokens: int = 512) -> str:
-        if not self.client:
-            raise APIError("GROQ_API_KEY is not set.")
+        groq = self._ensure_client()
         async with self.semaphore:
             for attempt in range(self.max_retries + 1):
                 try:

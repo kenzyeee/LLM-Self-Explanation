@@ -7,12 +7,14 @@ from typing import List, Set, Optional
 
 try:
     import nltk
+    import nltk.data
     from nltk.corpus import stopwords
     from nltk.stem import WordNetLemmatizer
     nltk.download('stopwords', quiet=True)
     nltk.download('wordnet', quiet=True)
 except ImportError:
-    pass
+    stopwords = None
+    WordNetLemmatizer = None
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +37,50 @@ DISCOURSE_WORDS = {
 SEP_PATTERN = re.compile(r'\[SEP\]', re.IGNORECASE)
 HTML_ENTITY_PATTERN = re.compile(r'&[a-zA-Z]+;|&#\d+;')
 
+FALLBACK_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
+    "in", "is", "it", "of", "on", "or", "that", "the", "this", "to",
+    "was", "were", "with",
+}
+
+
+class FallbackLemmatizer:
+    def lemmatize(self, token: str) -> str:
+        if not token.isalpha():
+            return token
+        if len(token) > 4 and token.endswith("vies"):
+            return token[:-1]
+        if len(token) > 3 and token.endswith("ies"):
+            return f"{token[:-3]}y"
+        if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
+            return token[:-1]
+        return token
+
+
+def _wordnet_available() -> bool:
+    try:
+        nltk.data.find("corpora/wordnet")
+        return True
+    except Exception:
+        return False
+
 
 class Normalizer:
     def __init__(self, use_lemmatization=True, remove_stopwords=True):
         self.use_lemmatization = use_lemmatization
         self.remove_stopwords = remove_stopwords
-        self.lemmatizer = WordNetLemmatizer() if use_lemmatization else None
+        if use_lemmatization and WordNetLemmatizer and _wordnet_available():
+            self.lemmatizer = WordNetLemmatizer()
+        elif use_lemmatization:
+            self.lemmatizer = FallbackLemmatizer()
+        else:
+            self.lemmatizer = None
         try:
-            self.stop_words = set(stopwords.words('english')) if remove_stopwords else set()
+            self.stop_words = set(stopwords.words('english')) if remove_stopwords and stopwords else set()
         except Exception:
             self.stop_words = set()
+        if remove_stopwords and not self.stop_words:
+            self.stop_words = FALLBACK_STOPWORDS
 
     def pre_normalize(self, token: str) -> str:
         """Light normalization for input-anchored matching (no lemmatization)."""
