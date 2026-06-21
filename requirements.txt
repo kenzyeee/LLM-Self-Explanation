@@ -3,8 +3,8 @@
 # Dataset loading
 datasets>=2.14.0
 
-# LLM API
-groq>=0.4.0
+# LLM API (OpenAI-compatible, e.g. OpenRouter)
+openai>=1.0.0
 
 # NLP processing
 nltk>=3.8.0

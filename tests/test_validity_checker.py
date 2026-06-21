@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
-from src.metrics.validity_checker import ValidityChecker, FlipResult, StatisticalTest
+from src.metrics.validity_checker import ValidityChecker, FlipResult
 
 
 class TestValidityChecker:
@@ -94,11 +94,6 @@ class TestValidityChecker:
         d = result.to_dict()
         assert d["flipped"] is False
         assert d["masked_tokens"] == []
-
-    def test_statistical_test_fields(self):
-        st = StatisticalTest(test_statistic=3.5, p_value=0.01, mean_diff=0.5, effect_size=0.9)
-        assert st.test_statistic == 3.5
-        assert st.t_statistic == 3.5
 
     @pytest.mark.asyncio
     async def test_consensus_core_removal_exception(self):

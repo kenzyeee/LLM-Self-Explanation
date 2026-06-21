@@ -34,6 +34,12 @@ class APIError(ExplanationStudyError):
         super().__init__(message, error_code=error_code, details=details)
 
 
+class RateLimitExhausted(APIError):
+    """Raised when rate-limit retries are exhausted; triggers immediate checkpoint save."""
+    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, error_code="API429", details=details)
+
+
 class ParsingError(ExplanationStudyError):
     def __init__(self, message: str, error_code: str = "PRS000", details: Optional[Dict[str, Any]] = None):
         super().__init__(message, error_code=error_code, details=details)
@@ -46,6 +52,11 @@ class ValidationError(ExplanationStudyError):
 
 class ConfigurationError(ExplanationStudyError):
     def __init__(self, message: str, error_code: str = "CFG000", details: Optional[Dict[str, Any]] = None):
+        super().__init__(message, error_code=error_code, details=details)
+
+
+class PromptValidationError(ExplanationStudyError):
+    def __init__(self, message: str, error_code: str = "PRV000", details: Optional[Dict[str, Any]] = None):
         super().__init__(message, error_code=error_code, details=details)
 
 
@@ -67,3 +78,7 @@ def raise_validation_error(message: str, error_code: str = "VAL000", **details):
 
 def raise_configuration_error(message: str, error_code: str = "CFG000", **details):
     raise ConfigurationError(message, error_code=error_code, details=details)
+
+
+def raise_prompt_validation_error(message: str, error_code: str = "PRV000", **details):
+    raise PromptValidationError(message, error_code=error_code, details=details)

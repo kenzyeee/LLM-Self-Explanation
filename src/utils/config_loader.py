@@ -139,8 +139,8 @@ class ConfigValidator:
         for model in models:
             if not model.name:
                 raise ConfigurationError("Model name is required")
-            if not model.groq_model_id:
-                raise ConfigurationError(f"Model {model.name}: groq_model_id is required")
+            if not model.model_id:
+                raise ConfigurationError(f"Model {model.name}: model_id is required")
             if model.context_window <= 0:
                 raise ConfigurationError(f"Model {model.name}: context_window must be positive")
 

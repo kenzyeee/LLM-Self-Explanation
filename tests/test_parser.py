@@ -15,34 +15,24 @@ def normalizer():
 
 class TestParseClassification:
     def test_valid_json(self, parser):
-        label, conf = parser.parse_classification(
-            '{"label":"positive","confidence":9}', ["positive", "negative"]
+        label = parser.parse_classification(
+            '{"label":"positive"}', ["positive", "negative"]
         )
         assert label == "positive"
-        assert conf == 0.9
-
-    def test_valid_json_confidence_as_int(self, parser):
-        label, conf = parser.parse_classification(
-            '{"label":"negative","confidence":8}', ["positive", "negative"]
-        )
-        assert label == "negative"
-        assert conf == 0.8
 
     def test_json_in_code_fence(self, parser):
-        resp = '```json\n{"label":"entailment","confidence":9}\n```'
-        label, conf = parser.parse_classification(resp, ["entailment", "neutral", "contradiction"])
+        resp = '```json\n{"label":"entailment"}\n```'
+        label = parser.parse_classification(resp, ["entailment", "neutral", "contradiction"])
         assert label == "entailment"
-        assert conf == 0.9
 
     def test_json_surrounded_by_text(self, parser):
-        resp = 'Here is my answer: {"label":"Sci/Tech","confidence":8}'
-        label, conf = parser.parse_classification(resp, ["World", "Sports", "Business", "Sci/Tech"])
+        resp = 'Here is my answer: {"label":"Sci/Tech"}'
+        label = parser.parse_classification(resp, ["World", "Sports", "Business", "Sci/Tech"])
         assert label == "Sci/Tech"
-        assert conf == 0.8
 
     def test_label_not_in_set_raises(self, parser):
         with pytest.raises(Exception):
-            parser.parse_classification('{"label":"invalid","confidence":5}', ["positive", "negative"])
+            parser.parse_classification('{"label":"invalid"}', ["positive", "negative"])
 
     def test_empty_response_raises(self, parser):
         with pytest.raises(Exception):
@@ -52,34 +42,39 @@ class TestParseClassification:
         with pytest.raises(Exception):
             parser.parse_classification("Prediction: positive", ["positive", "negative"])
 
-    def test_confidence_out_of_range_raises(self, parser):
-        with pytest.raises(Exception):
-            parser.parse_classification('{"label":"positive","confidence":15}', ["positive", "negative"])
-
 
 class TestParseHighlighting:
-    def test_valid_highlights(self, parser, normalizer):
+    def test_valid_salience(self, parser, normalizer):
         input_text = "This movie was great and wonderful and amazing."
         tokens = parser.parse_highlighting(
-            '{"highlights":["great","wonderful","amazing"]}', input_text, normalizer
+            '{"salience":{"great":10,"wonderful":8,"amazing":5}}', input_text, normalizer
         )
         assert len(tokens) == 3
         assert "great" in tokens
 
-    def test_too_few_highlights_raises(self, parser, normalizer):
-        with pytest.raises(Exception):
-            parser.parse_highlighting(
-                '{"highlights":["great"]}', "great wonderful", normalizer
-            )
+    def test_salience_returns_top5_by_score(self, parser, normalizer):
+        input_text = "one two three four five six seven eight nine ten"
+        tokens = parser.parse_highlighting(
+            '{"salience":{"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}}',
+            input_text, normalizer
+        )
+        assert len(tokens) == 5
+        assert tokens == ["ten", "nine", "eight", "seven", "six"]
 
-    def test_highlight_not_anchored_discarded_ok(self, parser, normalizer):
+    def test_salience_unanchored_discarded(self, parser, normalizer):
         result = parser.parse_highlighting(
-            '{"highlights":["great","nonexistent","amazing"]}',
+            '{"salience":{"great":10,"nonexistent":8,"amazing":5}}',
             "This is great and amazing", normalizer
         )
         assert len(result) == 2
         assert "great" in result
         assert "amazing" in result
+
+    def test_too_few_valid_raises(self, parser, normalizer):
+        with pytest.raises(Exception):
+            parser.parse_highlighting(
+                '{"salience":{"great":10}}', "great wonderful", normalizer
+            )
 
     def test_empty_response_raises(self, parser, normalizer):
         with pytest.raises(Exception):
@@ -90,55 +85,90 @@ class TestParseRationale:
     def test_valid_rationale(self, parser, normalizer):
         input_text = "The acting was superb and the plot compelling."
         rationale, evidence = parser.parse_rationale(
-            '{"rationale":"The acting was superb.","evidence":["acting","superb","plot","compelling"]}',
+            '{"rationale":"The acting was superb and the plot compelling."}',
             input_text, normalizer
         )
-        assert "superb" in rationale
-        assert len(evidence) == 4
+        assert "superb" in rationale or "acting" in rationale
+        assert len(evidence) >= 2
 
-    def test_evidence_not_anchored_raises(self, parser, normalizer):
+    def test_unanchored_rationale_raises(self, parser, normalizer):
+        """Rationale sentence with no dependency tokens that anchor into input text."""
         with pytest.raises(Exception):
             parser.parse_rationale(
-                '{"rationale":"Good movie.","evidence":["nonexistent"]}',
+                '{"rationale":"This is completely unrelated."}',
                 "Great movie", normalizer
             )
 
-    def test_empty_evidence_raises(self, parser, normalizer):
+    def test_empty_rationale_raises(self, parser, normalizer):
         with pytest.raises(Exception):
             parser.parse_rationale(
-                '{"rationale":"Good movie.","evidence":[]}',
+                '{"rationale":""}',
                 "Great movie", normalizer
             )
+
+    def test_introduced_concepts_tracked(self, parser, normalizer):
+        """Rationale concepts absent from the input are surfaced as introduced
+        concepts (post-hoc rationalization signal), not silently dropped."""
+        input_text = "The movie was great."
+        rationale, evidence = parser.parse_rationale(
+            '{"rationale":"The great movie felt boring overall."}',
+            input_text, normalizer
+        )
+        introduced = parser._r_introduced
+        assert isinstance(introduced, list)
+        # Partition invariant: anchored evidence is in the input; introduced is not.
+        for tok in evidence:
+            assert normalizer.is_anchored(tok, input_text)
+        for tok in introduced:
+            assert not normalizer.is_anchored(tok, input_text)
+        # 'boring' is a salient concept absent from the input → should be introduced.
+        assert any(t.startswith("bor") for t in introduced)
 
 
 class TestParseCounterfactual:
     def test_valid_counterfactual(self, parser, normalizer):
         input_text = "This movie was great."
-        cf_text, new_pred = parser.parse_counterfactual(
-            '{"counterfactual_text":"This movie was terrible.","new_prediction":"negative"}',
+        cf_text, new_pred, from_tokens = parser.parse_counterfactual(
+            '{"rewritten":"This movie was terrible.","new_prediction":"negative"}',
             input_text, "positive", ["positive", "negative"], normalizer
         )
-        assert "terrible" in cf_text
+        assert cf_text == "This movie was terrible."
         assert new_pred == "negative"
+        assert "great" in from_tokens
 
     def test_no_flip_raises(self, parser, normalizer):
         with pytest.raises(Exception):
             parser.parse_counterfactual(
-                '{"counterfactual_text":"This movie was great.","new_prediction":"positive"}',
+                '{"rewritten":"This movie was awesome.","new_prediction":"positive"}',
                 "This movie was great.", "positive", ["positive", "negative"], normalizer
             )
 
     def test_invalid_label_raises(self, parser, normalizer):
         with pytest.raises(Exception):
             parser.parse_counterfactual(
-                '{"counterfactual_text":"This movie was terrible.","new_prediction":"invalid"}',
+                '{"rewritten":"This movie was terrible.","new_prediction":"invalid"}',
                 "This movie was great.", "positive", ["positive", "negative"], normalizer
             )
 
     def test_edit_ratio_too_high_raises(self, parser, normalizer):
         with pytest.raises(Exception):
             parser.parse_counterfactual(
-                '{"counterfactual_text":"This was a completely different sentence with many changes and different words.","new_prediction":"negative"}',
+                '{"rewritten":"This car was terrible.","new_prediction":"negative"}',
+                "This movie was great.", "positive", ["positive", "negative"], normalizer,
+                max_edit_ratio=0.3
+            )
+
+    def test_null_rewritten_raises(self, parser, normalizer):
+        with pytest.raises(Exception):
+            parser.parse_counterfactual(
+                '{"rewritten":null,"new_prediction":null}',
+                "This movie was great.", "positive", ["positive", "negative"], normalizer
+            )
+
+    def test_identical_text_raises(self, parser, normalizer):
+        with pytest.raises(Exception):
+            parser.parse_counterfactual(
+                '{"rewritten":"This movie was great.","new_prediction":"negative"}',
                 "This movie was great.", "positive", ["positive", "negative"], normalizer
             )
 

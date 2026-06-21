@@ -30,9 +30,23 @@ def show_summary(out):
     print("=" * 60)
     print(f"\n  Accuracy:     {overall['n_instances']} instances")
     print(f"  Mean ECS:     {overall['mean_ecs']:.4f}  [{overall['ecs_ci_lower']:.4f}, {overall['ecs_ci_upper']:.4f}]")
-    print(f"  Spearman rho: {overall['spearman_rho']:.4f}  (p={overall['spearman_p_value']:.4f})")
+    print(f"  ECS lift/chance: {overall.get('mean_ecs_lift', 0):+.4f}  (random={overall.get('mean_ecs_random', 0):.4f})  <- HEADLINE")
+    print(f"  Complete-case ECS (N={overall['n_complete_cases']}): {overall['mean_ecs_complete']:.4f}")
+    print(f"  ECS by correctness: correct={overall.get('mean_ecs_correct', 0):.4f} (N={overall.get('n_correct', 0)})  "
+          f"incorrect={overall.get('mean_ecs_incorrect', 0):.4f} (N={overall.get('n_incorrect', 0)})")
     print(f"  Kendall tau:  {overall['mean_kendall_H_RO']:.4f}")
     print(f"  CC3:          {overall['pct_instances_with_cc3']:.0f}%  CC4: {overall['pct_instances_with_cc4']:.0f}%")
+    print(f"  Introduced-concept rate (R): {overall.get('introduced_concept_rate', 0):.3f}")
+    print(f"  CF validity:  free={overall.get('cf_free_validity_rate', 0)*100:.0f}%  minimal={overall.get('cf_minimal_validity_rate', 0)*100:.0f}%"
+          f"   |  minimality: free={overall.get('mean_cf_free_minimality', 0):.3f} minimal={overall.get('mean_cf_minimal_minimality', 0):.3f}")
+
+    print("\n  -- Sampling Log --")
+    print(f"  {'Dataset':<10} {'Req':>3} {'Got':>3} {'Wrong':>5}")
+    for m in agg:
+        if m["aggregation_level"] == "model_dataset":
+            parts = m["group_name"].split("_", 1)
+            ds = parts[1] if len(parts) > 1 else m["group_name"]
+            print(f"  {ds:<10} {m['requested_samples']:>3} {m['sampled_samples']:>3} {m['dropped_wrong_pred']:>5}")
 
     print("\n  -- Per Dataset --")
     print(f"  {'Dataset':<10} {'n':>3} {'ECS':>6} {'H':>4} {'R':>4} {'CF':>4} {'RO':>4}")
@@ -46,6 +60,11 @@ def show_summary(out):
                 print(f" {m[k]*100:>3.0f}%", end="")
             print()
 
+    print("\n  -- ECS by Input Length --")
+    print(f"  {'Length':<15} {'N':>3} {'Mean ECS':>8}")
+    for bucket in ["short", "medium", "long"]:
+        print(f"  {bucket:<15} {overall[f'n_{bucket}']:>3} {overall[f'mean_ecs_{bucket}']:>8.4f}")
+
     print("\n  -- Pairwise Jaccard --")
     for p in ["H_R", "H_CF", "H_RO", "R_CF", "R_RO", "CF_RO"]:
         print(f"  {p:<7}  {overall['mean_jaccard_'+p]:.4f}")
@@ -58,6 +77,30 @@ def show_summary(out):
     lo, hi = valid[0], valid[-1]
     print(f"  LOWEST ECS:  {lo['instance_id']} ({lo['ecs']:.4f})  {lo['ground_truth_label']} -> {lo['predicted_label']}")
     print(f"  HIGHEST ECS: {hi['instance_id']} ({hi['ecs']:.4f})  {hi['ground_truth_label']} -> {hi['predicted_label']}")
+
+    # Erasure / faithfulness anchor (separate consistency axis), if the pass has run
+    erasure_path = out / "aggregate_erasure.json"
+    if erasure_path.exists():
+        with open(erasure_path) as f:
+            er = json.load(f)
+        o = er.get("overall", {})
+        ops = o.get("operators", [])
+        fmt = lambda x: f"{x:.2f}" if isinstance(x, (int, float)) else "  — "
+        print("\n  -- Erasure / Faithfulness Anchor (separate consistency axis) --")
+        for op in ops:
+            cc = o.get("cc3_flip_rate", {}).get(op)
+            rnd = o.get("random_flip_rate", {}).get(op)
+            gap = o.get("cc3_minus_random", {}).get(op)
+            print(f"  [{op:>6}] CC3 flip={fmt(cc)}  random={fmt(rnd)}  gap(CC3-rand)={fmt(gap)}")
+        tiers = er.get("by_ecs_lift_tier", {})
+        if tiers and ops:
+            print(f"  CC3-minus-random gap by ECS-lift tier (operator={ops[0]}):")
+            for tier in ["low", "mid", "high"]:
+                if tier in tiers:
+                    t = tiers[tier]
+                    print(f"    {tier:<5} (N={t.get('n')}): gap={fmt(t.get(f'gap_{ops[0]}'))}")
+    else:
+        print("\n  (No erasure pass yet — run:  python scripts/run_validity_tests.py)")
 
     files = sorted(f for f in out.iterdir() if f.is_file())
     print(f"\n  -- Files ({len(files)}) --")
@@ -81,4 +124,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

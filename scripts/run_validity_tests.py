@@ -1,23 +1,48 @@
+"""Erasure / faithfulness pass — the SEPARATE consistency axis.
+
+This is the canonical erasure anchor for the study. It is deliberately a
+*separate, post-hoc* pass over a completed collection run (instance_results.jsonl),
+embodying the framing that faithfulness is an independently-validated quantity —
+NOT ground truth, but a second behavioural consistency axis (stated-vs-revealed
+input sensitivity, in the spirit of ERASER comprehensiveness; DeYoung et al. 2020).
+
+For each instance it measures, relative to the model's OWN prediction:
+  * Per-strategy erasure: erase a strategy's evidence token set, does the
+    prediction flip? Run for H, R, CF, RO under BOTH operators (mask, delete).
+  * Consensus-Core erasure: erase CC3 / CC4 token sets under both operators.
+  * Random control: erase a same-size random token set, AVERAGED over
+    n_random_baseline_trials, under both operators.
+
+The headline result is CC-erasure flip rate MINUS random-erasure flip rate,
+bucketed by ECS-lift tier: does cross-strategy consensus localize causally
+important tokens better than chance, and does the gap grow with agreement?
+
+Usage:
+    python scripts/run_validity_tests.py                       # latest run, both operators
+    python scripts/run_validity_tests.py --results-dir outputs/<run>
+    python scripts/run_validity_tests.py --max-instances 6 --trials 3   # cheap smoke
+"""
 import argparse
 import asyncio
 import json
 import logging
+import random
 import sys
 from pathlib import Path
-from typing import List, Dict, Any
-from datetime import datetime
+from typing import List, Dict, Any, Optional, Set
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import numpy as np
-import scipy.stats
+
 from src.inference.inference_engine import InferenceEngine
-from src.utils.data_models import ValidityTestResult, AggregateValidityResults, save_validity_results
+from src.parsing.parser import Parser
 from src.utils.config_loader import load_and_validate_config, parse_command_line_args
 from src.utils.logging_config import setup_logging
-from src.utils.exceptions import APIError
 
 logger = logging.getLogger(__name__)
+
+_PUNCT = '.,!?;:()[]{}\'"'
 
 
 def load_instance_results(filepath: str) -> List[Dict[str, Any]]:
@@ -29,226 +54,254 @@ def load_instance_results(filepath: str) -> List[Dict[str, Any]]:
     return results
 
 
-def build_masked_text(text: str, tokens_to_mask: set, mask_token: str = "[MASK]") -> str:
-    words = text.split()
-    masked = []
-    for word in words:
-        clean_word = word.strip('.,!?;:()[]{}\'"')
-        if clean_word in tokens_to_mask:
-            prefix = word[:len(word)-len(clean_word)] if clean_word else ""
-            suffix = word[len(clean_word):] if clean_word else ""
-            masked.append(f"{prefix}{mask_token}{suffix}")
+def erase(text: str, tokens: Set[str], operator: str, mask_token: str = "[MASK]") -> str:
+    """Erase whole-word occurrences of `tokens` from `text`.
+
+    operator="mask" -> replace with [MASK]; operator="delete" -> drop entirely.
+    Matching is case-insensitive on the punctuation-stripped surface word.
+    """
+    toks = {t.lower() for t in tokens}
+    out = []
+    for w in text.split():
+        clean = w.strip(_PUNCT).lower()
+        if clean and clean in toks:
+            if operator == "mask":
+                out.append(mask_token)
+            # delete: append nothing
         else:
-            masked.append(word)
-    return " ".join(masked)
+            out.append(w)
+    return " ".join(out)
 
 
-def random_token_selection(text: str, n: int) -> list:
-    words = list(set(text.split()))
-    if not words or n <= 0:
-        return []
-    if n >= len(words):
-        return words
-    return list(np.random.choice(words, n, replace=False))
-
-
-async def process_validity_instance(
-    instance_data: Dict[str, Any],
-    engine: InferenceEngine,
-    classification_prompt: str,
-    label_set: list,
-) -> ValidityTestResult:
-    text = instance_data["text"]
-    cc3_tokens = set(instance_data.get("cc3_tokens", []))
-    cc4_tokens = set(instance_data.get("cc4_tokens", []))
-    original_prediction = instance_data.get("predicted_label", "")
-    instance_id = instance_data["instance_id"]
-
-    result = ValidityTestResult(
-        instance_id=instance_id,
-        dataset=instance_data.get("dataset", ""),
-        model=instance_data.get("model", ""),
-    )
-
-    # CC3 removal test
-    if cc3_tokens:
-        masked_text = build_masked_text(text, cc3_tokens)
-        prompt = classification_prompt.format(input_text=masked_text, label_set=", ".join(label_set))
-        try:
-            resp = await engine._make_request(prompt, max_tokens=50)
-            from src.parsing.parser import Parser
-            parser = Parser()
-            predicted, _ = parser.parse_classification(resp, label_set)
-            result.cc3_tokens = cc3_tokens
-            result.cc3_original_prediction = original_prediction
-            result.cc3_masked_prediction = predicted
-            result.cc3_flipped = (original_prediction != predicted)
-        except APIError as e:
-            logger.error(f"CC3 test failed for {instance_id}: {e}")
-
-    # CC4 removal test
-    if cc4_tokens:
-        masked_text = build_masked_text(text, cc4_tokens)
-        prompt = classification_prompt.format(input_text=masked_text, label_set=", ".join(label_set))
-        try:
-            resp = await engine._make_request(prompt, max_tokens=50)
-            parser = Parser()
-            predicted, _ = parser.parse_classification(resp, label_set)
-            result.cc4_tokens = cc4_tokens
-            result.cc4_original_prediction = original_prediction
-            result.cc4_masked_prediction = predicted
-            result.cc4_flipped = (original_prediction != predicted)
-        except APIError as e:
-            logger.error(f"CC4 test failed for {instance_id}: {e}")
-
-    # Random baseline
-    n_random = len(cc3_tokens) if cc3_tokens else 1
-    random_toks = random_token_selection(text, n_random)
-    masked_text = build_masked_text(text, set(random_toks))
-    prompt = classification_prompt.format(input_text=masked_text, label_set=", ".join(label_set))
+async def classify(engine: InferenceEngine, parser: Parser, class_prompt: str,
+                   text: str, label_set: List[str]) -> str:
+    prompt = class_prompt.format(input_text=text, label_set=", ".join(label_set))
     try:
         resp = await engine._make_request(prompt, max_tokens=50)
-        parser = Parser()
-        predicted, _ = parser.parse_classification(resp, label_set)
-        result.random_tokens = set(random_toks)
-        result.random_original_prediction = original_prediction
-        result.random_masked_prediction = predicted
-        result.random_flipped = (original_prediction != predicted)
-    except APIError as e:
-        logger.error(f"Random baseline test failed for {instance_id}: {e}")
-
-    return result
+        return parser.parse_classification(resp, label_set)
+    except Exception as e:
+        # Surface failures rather than silently turning them into "no flip" —
+        # a rate-limited / unparseable call is UNKNOWN (None downstream), not evidence.
+        logger.warning(f"erasure classify failed ({type(e).__name__}: {str(e)[:120]})")
+        return ""
 
 
-def compute_aggregate_validity(results: List[ValidityTestResult]) -> AggregateValidityResults:
-    if not results:
-        return AggregateValidityResults(
-            dataset="", model="", n_instances=0,
-            cc3_flip_rate=0, cc4_flip_rate=0, random_flip_rate=0,
-            t_statistic=0, p_value=1.0, effect_size=0,
-            cc3_flip_ci_lower=0, cc3_flip_ci_upper=0,
-            random_flip_ci_lower=0, random_flip_ci_upper=0,
-        )
+async def flip_after_erasure(engine, parser, class_prompt, text, tokens, operator,
+                             label_set, original) -> Optional[bool]:
+    """Erase `tokens` under `operator`; True if the prediction flipped. None if
+    no tokens or the re-classification was unparseable."""
+    if not tokens:
+        return None
+    pred = await classify(engine, parser, class_prompt, erase(text, set(tokens), operator), label_set)
+    if not pred:
+        return None
+    return pred != original
 
-    cc3_flips = [1 if r.cc3_flipped else 0 for r in results if r.cc3_tokens]
-    random_flips = [1 if r.random_flipped else 0 for r in results if r.random_tokens]
-    cc4_flips = [1 if r.cc4_flipped else 0 for r in results if r.cc4_tokens]
 
-    cc3_rate = np.mean(cc3_flips) if cc3_flips else 0
-    random_rate = np.mean(random_flips) if random_flips else 0
-    cc4_rate = np.mean(cc4_flips) if cc4_flips else 0
+async def random_flip_rate(engine, parser, class_prompt, text, n, operator,
+                           label_set, original, trials, seed) -> Optional[float]:
+    """Flip rate when erasing `n` RANDOM unique tokens, averaged over `trials`."""
+    words = list(dict.fromkeys(w.strip(_PUNCT).lower() for w in text.split() if w.strip(_PUNCT)))
+    if n <= 0 or not words:
+        return None
+    rng = random.Random(seed)
+    k = min(n, len(words))
+    flips = []
+    for _ in range(trials):
+        sample = set(rng.sample(words, k))
+        pred = await classify(engine, parser, class_prompt, erase(text, sample, operator), label_set)
+        if pred:
+            flips.append(1 if pred != original else 0)
+    return (sum(flips) / len(flips)) if flips else None
 
-    if len(cc3_flips) > 1 and len(random_flips) > 1:
-        min_len = min(len(cc3_flips), len(random_flips))
-        t_stat, p_val = scipy.stats.ttest_rel(cc3_flips[:min_len], random_flips[:min_len])
-        # Cohen's d
-        diff = np.array(cc3_flips[:min_len]) - np.array(random_flips[:min_len])
-        effect_size = float(np.mean(diff) / np.std(diff)) if np.std(diff) > 0 else 0.0
+
+def _ro_tokens(data: Dict[str, Any]) -> List[str]:
+    return [t for t, _ in data.get("rank_ordering_tokens", [])]
+
+
+async def process_instance_erasure(data, engine, parser, class_prompt, label_set,
+                                   operators, trials, seed) -> Dict[str, Any]:
+    text = data["text"]
+    original = data.get("predicted_label", "")
+    strat_sets = {
+        "H": set(data.get("highlighting_tokens", [])),
+        "R": set(data.get("rationale_tokens", [])),
+        "CF": set(data.get("counterfactual_tokens", [])),
+        "RO": set(_ro_tokens(data)),
+    }
+    cc3 = set(data.get("cc3_tokens", []))
+    cc4 = set(data.get("cc4_tokens", []))
+
+    rec: Dict[str, Any] = {
+        "instance_id": data["instance_id"],
+        "dataset": data.get("dataset", ""),
+        "model": data.get("model", ""),
+        "correct": data.get("correct"),
+        "ecs": data.get("ecs"),
+        "ecs_lift": data.get("ecs_lift"),
+        "original_prediction": original,
+        "strategy_erasure": {},
+        "cc3": {"size": len(cc3)},
+        "cc4": {"size": len(cc4)},
+        "random_cc3": {"n": len(cc3) if cc3 else len(cc4)},
+    }
+    if not original:
+        return rec
+
+    for s, toks in strat_sets.items():
+        entry = {"n": len(toks)}
+        for op in operators:
+            entry[op] = await flip_after_erasure(engine, parser, class_prompt, text, toks, op, label_set, original)
+        rec["strategy_erasure"][s] = entry
+
+    for op in operators:
+        rec["cc3"][op] = await flip_after_erasure(engine, parser, class_prompt, text, cc3, op, label_set, original)
+        rec["cc4"][op] = await flip_after_erasure(engine, parser, class_prompt, text, cc4, op, label_set, original)
+
+    n_random = len(cc3) if cc3 else len(cc4)
+    for op in operators:
+        rec["random_cc3"][f"{op}_rate"] = await random_flip_rate(
+            engine, parser, class_prompt, text, n_random, op, label_set, original, trials, seed)
+    return rec
+
+
+def _rate(vals: List[Optional[bool]]) -> Optional[float]:
+    xs = [1 if v else 0 for v in vals if v is not None]
+    return (sum(xs) / len(xs)) if xs else None
+
+
+def _mean(vals: List[Optional[float]]) -> Optional[float]:
+    xs = [v for v in vals if v is not None]
+    return (float(np.mean(xs)) if xs else None)
+
+
+def _tier(lift: Optional[float], lo: float, hi: float) -> Optional[str]:
+    if lift is None:
+        return None
+    if lift <= lo:
+        return "low"
+    if lift <= hi:
+        return "mid"
+    return "high"
+
+
+def aggregate(records: List[Dict[str, Any]], operators: List[str]) -> Dict[str, Any]:
+    overall: Dict[str, Any] = {"n": len(records), "operators": operators, "strategy_flip_rate": {}}
+    for s in ["H", "R", "CF", "RO"]:
+        overall["strategy_flip_rate"][s] = {
+            op: _rate([r["strategy_erasure"].get(s, {}).get(op) for r in records]) for op in operators
+        }
+    overall["cc3_flip_rate"] = {op: _rate([r["cc3"].get(op) for r in records]) for op in operators}
+    overall["cc4_flip_rate"] = {op: _rate([r["cc4"].get(op) for r in records]) for op in operators}
+    overall["random_flip_rate"] = {op: _mean([r["random_cc3"].get(f"{op}_rate") for r in records]) for op in operators}
+    overall["cc3_minus_random"] = {}
+    for op in operators:
+        cc = overall["cc3_flip_rate"][op]
+        rnd = overall["random_flip_rate"][op]
+        overall["cc3_minus_random"][op] = (cc - rnd) if (cc is not None and rnd is not None) else None
+
+    # ECS-lift tiers (tertiles over available lifts)
+    lifts = sorted(r["ecs_lift"] for r in records if r.get("ecs_lift") is not None)
+    by_tier: Dict[str, Any] = {}
+    if len(lifts) >= 3:
+        lo = lifts[len(lifts) // 3]
+        hi = lifts[2 * len(lifts) // 3]
+        for tier in ["low", "mid", "high"]:
+            sub = [r for r in records if _tier(r.get("ecs_lift"), lo, hi) == tier]
+            if not sub:
+                continue
+            by_tier[tier] = {"n": len(sub)}
+            for op in operators:
+                cc = _rate([r["cc3"].get(op) for r in sub])
+                rnd = _mean([r["random_cc3"].get(f"{op}_rate") for r in sub])
+                by_tier[tier][f"cc3_flip_{op}"] = cc
+                by_tier[tier][f"random_flip_{op}"] = rnd
+                by_tier[tier][f"gap_{op}"] = (cc - rnd) if (cc is not None and rnd is not None) else None
+        by_tier["_thresholds"] = {"low<=": lo, "high>": hi}
+    return {"overall": overall, "by_ecs_lift_tier": by_tier}
+
+
+async def run(config, args):
+    base = Path(config.output.base_dir)
+    results_file = None
+    if args.results_dir:
+        cand = Path(args.results_dir)
+        results_file = cand if cand.suffix == ".jsonl" else cand / "instance_results.jsonl"
     else:
-        t_stat, p_val, effect_size = 0.0, 1.0, 0.0
-
-    # Bootstrap CIs
-    n_bootstrap = 1000
-    cc3_rates = []
-    random_rates = []
-    if cc3_flips and random_flips:
-        n = len(cc3_flips)
-        for _ in range(n_bootstrap):
-            idx = np.random.choice(n, n, replace=True)
-            boot_cc3 = [cc3_flips[i] for i in idx]
-            boot_random = [random_flips[i % len(random_flips)] for i in idx]
-            cc3_rates.append(np.mean(boot_cc3))
-            random_rates.append(np.mean(boot_random))
-    else:
-        cc3_rates = [0.0]
-        random_rates = [0.0]
-
-    return AggregateValidityResults(
-        dataset=results[0].dataset,
-        model=results[0].model,
-        n_instances=len(results),
-        cc3_flip_rate=float(cc3_rate),
-        cc4_flip_rate=float(cc4_rate),
-        random_flip_rate=float(random_rate),
-        t_statistic=float(t_stat),
-        p_value=float(p_val),
-        effect_size=float(effect_size),
-        cc3_flip_ci_lower=float(np.percentile(cc3_rates, 2.5)),
-        cc3_flip_ci_upper=float(np.percentile(cc3_rates, 97.5)),
-        random_flip_ci_lower=float(np.percentile(random_rates, 2.5)),
-        random_flip_ci_upper=float(np.percentile(random_rates, 97.5)),
-    )
-
-
-async def run_validity_tests(config, args):
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(config.output.base_dir) / timestamp
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    setup_logging(log_dir=output_dir / "logs", console_level=config.output.log_level)
-    logger.info("Starting validity tests...")
-
-    # Find latest results
-    results_base = args.results_dir if hasattr(args, 'results_dir') and args.results_dir else Path(config.output.base_dir)
-    results_file = Path(results_base) / "instance_results.jsonl"
-    if not results_file.exists():
-        # Try to find latest
-        candidates = sorted(Path(results_base).iterdir(), key=lambda p: p.stat().st_mtime, reverse=True)
-        for cand in candidates:
-            if (cand / "instance_results.jsonl").exists():
-                results_file = cand / "instance_results.jsonl"
-                break
-
-    if not results_file.exists():
-        logger.error(f"No instance results found. Run experiment first.")
+        dirs = sorted((d for d in base.iterdir() if d.is_dir() and (d / "instance_results.jsonl").exists()),
+                      key=lambda p: p.stat().st_mtime, reverse=True)
+        if dirs:
+            results_file = dirs[0] / "instance_results.jsonl"
+    if not results_file or not results_file.exists():
+        logger.error("No instance_results.jsonl found. Run the experiment first.")
         return
 
+    out_dir = results_file.parent
+    setup_logging(log_dir=out_dir / "logs", console_level=config.output.log_level)
+
     instances = load_instance_results(str(results_file))
-    logger.info(f"Loaded {len(instances)} instance results from {results_file}")
+    if args.max_instances:
+        instances = instances[:args.max_instances]
+    logger.info(f"Erasure pass over {len(instances)} instances from {results_file}")
+
+    operators = list(config.validity.erasure_operators)
+    trials = args.trials if args.trials else config.validity.n_random_baseline_trials
 
     engine = InferenceEngine(
-        model_name=config.models[0].groq_model_id,
+        model_name=config.models[0].model_id,
         max_retries=config.inference.max_retries,
         concurrent_requests=config.inference.concurrent_requests,
     )
+    parser = Parser()
 
-    classification_prompt = Path("prompts/classification.txt").read_text(encoding='utf-8')
+    prompt_cache: Dict[str, str] = {}
 
-    all_validity_results = []
-    for instance_data in instances:
-        dataset_name = instance_data.get("dataset", "")
-        ds_specific = Path(f"prompts/classification_{dataset_name}.txt")
-        if ds_specific.exists():
-            classification_prompt = ds_specific.read_text(encoding='utf-8')
-        dataset_config = config.get_dataset_by_name(dataset_name)
-        label_set = dataset_config.labels if dataset_config else ["positive", "negative"]
+    def class_prompt_for(ds: str) -> str:
+        if ds not in prompt_cache:
+            p = Path(f"prompts/classification_{ds}.txt")
+            if not p.exists():
+                p = Path("prompts/classification.txt")
+            prompt_cache[ds] = p.read_text(encoding="utf-8")
+        return prompt_cache[ds]
 
-        result = await process_validity_instance(instance_data, engine, classification_prompt, label_set)
-        all_validity_results.append(result)
-        logger.info(f"Processed validity test for {result.instance_id}")
+    records = []
+    for i, data in enumerate(instances):
+        ds = data.get("dataset", "")
+        ds_cfg = config.get_dataset_by_name(ds)
+        label_set = ds_cfg.labels if ds_cfg else ["positive", "negative"]
+        rec = await process_instance_erasure(
+            data, engine, parser, class_prompt_for(ds), label_set,
+            operators, trials, seed=config.experiment.seed + i)
+        records.append(rec)
+        logger.info(f"[{i+1}/{len(instances)}] {rec['instance_id']} erasure done")
 
-    save_validity_results(all_validity_results, str(output_dir / "validity_tests.jsonl"))
+    with open(out_dir / "erasure_instances.jsonl", "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r) + "\n")
+    agg = aggregate(records, operators)
+    with open(out_dir / "aggregate_erasure.json", "w", encoding="utf-8") as f:
+        json.dump(agg, f, indent=2)
 
-    # Aggregate
-    agg = compute_aggregate_validity(all_validity_results)
-    with open(output_dir / "aggregate_validity.json", 'w') as f:
-        json.dump(agg.to_dict(), f, indent=2)
-
-    logger.info(f"Validity tests complete. Results saved to {output_dir}")
-    logger.info(f"CC3 flip rate: {agg.cc3_flip_rate:.3f}")
-    logger.info(f"Random flip rate: {agg.random_flip_rate:.3f}")
-    logger.info(f"Paired t-test p-value: {agg.p_value:.4f}")
-
-    return all_validity_results, agg
+    logger.info(f"Erasure pass complete -> {out_dir / 'aggregate_erasure.json'}")
+    o = agg["overall"]
+    for op in operators:
+        logger.info(f"[{op}] CC3 flip={o['cc3_flip_rate'][op]} random={o['random_flip_rate'][op]} "
+                    f"gap={o['cc3_minus_random'][op]}")
+    return records, agg
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run validity tests")
-    parser.add_argument("--results-dir", type=str, help="Directory containing instance_results.jsonl")
-    args, _ = parser.parse_known_args()
-    config_args = parse_command_line_args()
-    config = load_and_validate_config(args=config_args)
-    asyncio.run(run_validity_tests(config, args))
+    from dotenv import load_dotenv
+    load_dotenv()
+    p = argparse.ArgumentParser(description="Erasure / faithfulness pass")
+    p.add_argument("--results-dir", type=str, help="Run dir or instance_results.jsonl path")
+    p.add_argument("--max-instances", type=int, help="Process only the first N instances (cheap smoke)")
+    p.add_argument("--trials", type=int, help="Random-control draws (overrides config n_random_baseline_trials)")
+    args, _ = p.parse_known_args()
+    # Use config defaults — this script reads a completed run, it does not sample.
+    # Pass [] so the shared config parser ignores our custom flags in sys.argv.
+    config = load_and_validate_config(args=parse_command_line_args([]))
+    asyncio.run(run(config, args))
 
 
 if __name__ == "__main__":

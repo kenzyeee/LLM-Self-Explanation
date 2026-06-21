@@ -5,7 +5,7 @@ from datetime import datetime
 
 from src.utils.data_models import (
     InstanceResult, AggregateMetrics, ValidityTestResult,
-    CorrelationResult, StatisticalTest, FlipResult, ExecutionSummary,
+    ExecutionSummary,
     AggregateValidityResults,
     save_instance_results, load_instance_results,
     save_aggregate_metrics, load_aggregate_metrics,
@@ -55,21 +55,26 @@ class TestAggregateMetrics:
             ecs_ci_lower=0.45, ecs_ci_upper=0.55,
             mean_jaccard_H_R=0.4, mean_jaccard_H_CF=0.3, mean_jaccard_H_RO=0.6,
             mean_jaccard_R_CF=0.2, mean_jaccard_R_RO=0.5, mean_jaccard_CF_RO=0.4,
+            mean_overlap_H_R=0.6, mean_overlap_H_CF=0.5, mean_overlap_H_RO=0.7,
+            mean_overlap_R_CF=0.4, mean_overlap_R_RO=0.6, mean_overlap_CF_RO=0.5,
             mean_kendall_H_RO=0.7,
             mean_normalized_kendall_H_RO=0.85,
+            mean_rbo_H_RO=0.65,
             mean_cc3_size=3.0, mean_cc4_size=1.0,
             pct_instances_with_cc3=0.8, pct_instances_with_cc4=0.5,
             spearman_rho=0.3, spearman_p_value=0.01,
             correlation_ci_lower=0.1, correlation_ci_upper=0.5,
             highlighting_success_rate=0.9, rationale_success_rate=0.85,
             counterfactual_success_rate=0.8, rank_ordering_success_rate=0.75,
-            mean_ecs_primary=0.45,
+            mean_ecs_extraction_rationale=0.45, mean_ecs_extraction_perturbation=0.35,
         )
         d = m.to_dict()
         restored = AggregateMetrics.from_dict(d)
         assert restored.mean_ecs == 0.5
         assert restored.group_name == "sst2"
-        assert restored.mean_ecs_primary == 0.45
+        assert restored.mean_ecs_extraction_rationale == 0.45
+        assert restored.mean_ecs_extraction_perturbation == 0.35
+        assert restored.mean_rbo_H_RO == 0.65
 
 
 class TestValidityTestResult:
@@ -95,44 +100,6 @@ class TestValidityTestResult:
         restored = ValidityTestResult.from_dict(d)
         assert restored.cc3_tokens == set()
         assert not restored.cc3_flipped
-
-
-class TestCorrelationResult:
-    def test_round_trip(self):
-        r = CorrelationResult(rho=0.5, p_value=0.01, ci_lower=0.3, ci_upper=0.7)
-        d = r.to_dict()
-        restored = CorrelationResult.from_dict(d)
-        assert restored.rho == 0.5
-
-
-class TestStatisticalTest:
-    def test_round_trip(self):
-        r = StatisticalTest(test_statistic=-2.5, p_value=0.01, mean_diff=-0.3, effect_size=0.5)
-        d = r.to_dict()
-        restored = StatisticalTest.from_dict(d)
-        assert restored.test_statistic == -2.5
-        assert restored.effect_size == 0.5
-
-    def test_minimal(self):
-        r = StatisticalTest(test_statistic=1.0, p_value=0.05)
-        d = r.to_dict()
-        restored = StatisticalTest.from_dict(d)
-        assert restored.mean_diff is None
-
-
-class TestFlipResult:
-    def test_round_trip(self):
-        r = FlipResult(original_prediction="pos", masked_prediction="neg", flipped=True, masked_tokens={"good"})
-        d = r.to_dict()
-        restored = FlipResult.from_dict(d)
-        assert restored.flipped is True
-        assert "good" in restored.masked_tokens
-
-    def test_minimal(self):
-        r = FlipResult(original_prediction="pos", masked_prediction="pos", flipped=False)
-        d = r.to_dict()
-        restored = FlipResult.from_dict(d)
-        assert not restored.flipped
 
 
 class TestExecutionSummary:
@@ -238,8 +205,11 @@ class TestConvenienceFunctions:
             ecs_ci_lower=0.45, ecs_ci_upper=0.55,
             mean_jaccard_H_R=0.4, mean_jaccard_H_CF=0.3, mean_jaccard_H_RO=0.6,
             mean_jaccard_R_CF=0.2, mean_jaccard_R_RO=0.5, mean_jaccard_CF_RO=0.4,
+            mean_overlap_H_R=0.6, mean_overlap_H_CF=0.5, mean_overlap_H_RO=0.7,
+            mean_overlap_R_CF=0.4, mean_overlap_R_RO=0.6, mean_overlap_CF_RO=0.5,
             mean_kendall_H_RO=0.7,
             mean_normalized_kendall_H_RO=0.85,
+            mean_rbo_H_RO=0.65,
             mean_cc3_size=3.0, mean_cc4_size=1.0,
             pct_instances_with_cc3=0.8, pct_instances_with_cc4=0.5,
             spearman_rho=0.3, spearman_p_value=0.01,

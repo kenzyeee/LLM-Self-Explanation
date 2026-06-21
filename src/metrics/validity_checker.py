@@ -19,16 +19,6 @@ class FlipResult:
         }
 
 
-class StatisticalTest:
-    def __init__(self, test_statistic: float = 0.0, p_value: float = 1.0,
-                 mean_diff: float = 0.0, effect_size: float = 0.0):
-        self.test_statistic = test_statistic
-        self.t_statistic = test_statistic
-        self.p_value = p_value
-        self.mean_diff = mean_diff
-        self.effect_size = effect_size
-
-
 class ValidityChecker:
     def __init__(self, engine):
         self.engine = engine

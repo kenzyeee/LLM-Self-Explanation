@@ -34,7 +34,7 @@ class DatasetConfig:
 @dataclass
 class ModelConfig:
     name: str
-    groq_model_id: str
+    model_id: str
     description: Optional[str] = None
     context_window: int = 8192
     default_temperature: float = 0.0
@@ -94,6 +94,7 @@ class MetricsConfig:
 class ValidityConfig:
     masking_token: str = "[MASK]"
     n_random_baseline_trials: int = 10
+    erasure_operators: List[str] = field(default_factory=lambda: ["mask", "delete"])
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 

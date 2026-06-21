@@ -1,0 +1,16 @@
+The text was classified as: {predicted_label}
+
+Here is the exact text that was classified:
+"{input_text}"
+
+Pick ONE target label from: {other_labels}. Rewrite the text so a classifier would
+predict that target instead of "{predicted_label}". Change only what is necessary to
+flip the label — you may change as many or as few words as needed, but keep the rest
+of the text intact and fluent. Do not add meta commentary; return only the rewritten
+text in the JSON.
+
+Return only valid JSON:
+{{"rewritten": "<rewritten text>", "new_prediction": "<one of: {other_labels}>"}}
+
+If no change could plausibly flip the label, return:
+{{"rewritten": null, "new_prediction": null}}

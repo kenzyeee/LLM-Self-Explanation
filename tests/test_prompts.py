@@ -11,8 +11,8 @@ def format_prompt(template: str, input_text: str, label_set) -> str:
     return template.format(input_text=input_text, label_set=", ".join(label_set))
 
 
-def format_explain_prompt(template: str, predicted_label: str, other_labels: str = "World, Sports, Business") -> str:
-    return template.format(predicted_label=predicted_label, other_labels=other_labels)
+def format_explain_prompt(template: str, predicted_label: str, input_text: str = "Some sample text", other_labels: str = "World, Sports, Business") -> str:
+    return template.format(predicted_label=predicted_label, input_text=input_text, other_labels=other_labels)
 
 
 def test_classification_prompt_no_unrendered_placeholders():
@@ -95,13 +95,13 @@ def test_classification_json_format_wanted():
 def test_highlighting_json_format_wanted():
     prompt = load_prompt("prompts/highlighting_explain.txt")
     assert "JSON" in prompt
-    assert "highlights" in prompt
+    assert "salience" in prompt
 
 
 def test_rationale_json_format_wanted():
     prompt = load_prompt("prompts/rationale_explain.txt")
     assert "JSON" in prompt
-    assert "evidence" in prompt
+    assert "rationale" in prompt
 
 
 def test_counterfactual_json_format_wanted():

@@ -32,7 +32,7 @@ class PrettyPrinter:
             s += f"  {label}: {sorted(tokens) if isinstance(tokens, set) else tokens}\n"
         ro_tokens = instance.get('rank_ordering_tokens', [])
         if ro_tokens:
-            ro_words = [t[0] if isinstance(t, tuple) else t[0] for t in ro_tokens]
+            ro_words = [t[0] if isinstance(t, (list, tuple)) else t for t in ro_tokens]
             s += f"  RO: {ro_words}\n"
         else:
             s += f"  RO: []\n"

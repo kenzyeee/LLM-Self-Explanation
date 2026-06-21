@@ -17,7 +17,7 @@ class TestNormalizer:
 
     def test_normalize_basic(self, normalizer):
         result = normalizer.normalize("running")
-        assert result == "running"
+        assert result == "run"  # default normalizer lemmatizes
 
     def test_normalize_lowercase(self, normalizer):
         result = normalizer.normalize("GREAT")
@@ -58,17 +58,22 @@ class TestNormalizer:
         assert result is None or result == ""
 
     def test_normalize_lemmatization(self, normalizer):
-        result = normalizer.normalize("running")
-        assert result == "running"
+        assert normalizer.normalize("running") == "run"
+        assert normalizer.normalize("cats") == "cat"
 
     def test_normalize_lemmatization_plural(self, normalizer):
         result = normalizer.normalize("movies")
-        assert result == "movie"
+        assert result == "movie"  # default normalizer lemmatizes plurals -> singular
+
+    def test_normalize_no_lemmatization(self, normalizer_no_lemmatization):
+        # With lemmatization disabled, inflected forms are preserved verbatim.
+        assert normalizer_no_lemmatization.normalize("running") == "running"
+        assert normalizer_no_lemmatization.normalize("movies") == "movies"
 
     def test_normalize_tokens_single(self, normalizer):
         tokens = ["running"]
         result = normalizer.normalize_tokens(tokens)
-        assert result == {"running"}
+        assert result == {"run"}
 
     def test_normalize_tokens_multi_word(self, normalizer):
         tokens = ["great movie"]
@@ -106,3 +111,24 @@ class TestNormalizer:
 
     def test_is_anchored_punctuation_robust(self, normalizer):
         assert normalizer.is_anchored("great!", "This is a great movie")
+
+    # ── CF anchor diagnostic: known-failing examples ──────────────────────
+    def test_cf_anchor_better(self, normalizer):
+        """'better' must anchor in SST-2 positive review."""
+        assert normalizer.is_anchored("better", "i think this movie is better than the other")
+
+    def test_cf_anchor_control(self, normalizer):
+        """'control' must anchor when it appears as a full word."""
+        assert normalizer.is_anchored("control", "A mentally retarded control freak who ...")
+
+    def test_cf_anchor_tennis(self, normalizer):
+        """'Tennis' must anchor (case-insensitive)."""
+        assert normalizer.is_anchored("Tennis", "Tennis is a great sport")
+
+    def test_cf_anchor_substring_no_false_positive(self, normalizer):
+        """'ten' must NOT match 'tend' or 'content' (word-boundary)."""
+        assert not normalizer.is_anchored("ten", "These contents tend to be long")
+
+    def test_cf_anchor_substring_no_false_match(self, normalizer):
+        """'or' should NOT match 'world' or 'for' (word-boundary)."""
+        assert not normalizer.is_anchored("or", "world for thought")

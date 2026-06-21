@@ -47,7 +47,7 @@ class TestParseConfig:
         data = {
             "experiment": {"name": "test", "version": "1.0"},
             "datasets": [{"name": "sst2", "huggingface_id": "g/sst2", "split": "s", "sample_size": 1, "labels": ["a", "b"]}],
-            "models": [{"name": "llama", "groq_model_id": "llama-3.3-70b"}],
+            "models": [{"name": "llama", "model_id": "llama-3.3-70b"}],
             "explanation_strategies": [{"id": "H", "name": "h", "prompt_file": "p.txt"}],
         }
         config = _parse_config(data)
@@ -72,7 +72,7 @@ class TestConfigValidator:
         return Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g/sst2", split="s", sample_size=100, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[
                 ExplanationStrategyConfig(id="H", name="h", prompt_file="prompts/highlighting.txt", n_tokens=3),
@@ -172,9 +172,9 @@ class TestConfigValidator:
         with pytest.raises(ConfigurationError):
             ConfigValidator().validate(config)
 
-    def test_model_no_groq_id(self):
+    def test_model_no_model_id(self):
         config = self.make_minimal_config()
-        config.models[0].groq_model_id = ""
+        config.models[0].model_id = ""
         with pytest.raises(ConfigurationError):
             ConfigValidator().validate(config)
 
@@ -449,7 +449,7 @@ class TestApplyCommandLineOverrides:
         return Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g/sst2", split="s", sample_size=100, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[ExplanationStrategyConfig(id="H", name="h", prompt_file="p.txt")],
             normalization=NormalizationConfig(),
@@ -494,7 +494,7 @@ class TestApplyCommandLineOverrides:
 
     def test_models_filter(self):
         config = self.make_config()
-        config.models.append(ModelConfig(name="mixtral", groq_model_id="mixtral"))
+        config.models.append(ModelConfig(name="mixtral", model_id="mixtral"))
         args = Namespace(models=["mixtral"], experiment_name=None, seed=None, datasets=None, sample_size=None, temperature=None, max_retries=None, concurrent_requests=None, output_dir=None, log_level=None)
         config = apply_command_line_overrides(config, args)
         assert len(config.models) == 1
@@ -542,7 +542,7 @@ class TestSaveConfigToFile:
         config = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g/sst2", split="s", sample_size=100, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[ExplanationStrategyConfig(id="H", name="h", prompt_file="p.txt")],
             normalization=NormalizationConfig(),
@@ -570,7 +570,7 @@ class TestLoadAndValidateConfig:
         exp_yaml = {
             "experiment": {"name": "test", "version": "1.0"},
             "datasets": [{"name": "sst2", "huggingface_id": "stanfordnlp/sst2", "split": "validation", "sample_size": 100, "labels": ["negative", "positive"]}],
-            "models": [{"name": "llama", "groq_model_id": "llama-3.3-70b-versatile"}],
+            "models": [{"name": "llama", "model_id": "llama-3.3-70b-versatile"}],
             "inference": {"temperature": 0, "max_tokens": 512},
             "explanation_strategies": [
                 {"id": "H", "name": "highlighting", "prompt_file": str(prompts_dir / "highlighting.txt"), "n_tokens": 3},
@@ -597,7 +597,7 @@ class TestLoadAndValidateConfig:
         exp_yaml = {
             "experiment": {"name": "test", "version": "1.0"},
             "datasets": [{"name": "sst2", "huggingface_id": "stanfordnlp/sst2", "split": "validation", "sample_size": 100, "labels": ["negative", "positive"]}],
-            "models": [{"name": "llama", "groq_model_id": "llama-3.3-70b-versatile"}],
+            "models": [{"name": "llama", "model_id": "llama-3.3-70b-versatile"}],
             "inference": {"temperature": 0, "max_tokens": 512},
             "explanation_strategies": [
                 {"id": "H", "name": "highlighting", "prompt_file": str(prompts_dir / "highlighting.txt"), "n_tokens": 3},
@@ -632,7 +632,7 @@ class TestLoadExperimentConfig:
         exp_yaml = {
             "experiment": {"name": "test", "version": "1.0"},
             "datasets": [{"name": "sst2"}],
-            "models": [{"name": "llama", "groq_model_id": "llama-3.3-70b"}],
+            "models": [{"name": "llama", "model_id": "llama-3.3-70b"}],
             "explanation_strategies": [
                 {"id": "H", "name": "h", "prompt_file": str(tmp_path / "prompts/h.txt")},
                 {"id": "R", "name": "r", "prompt_file": str(tmp_path / "prompts/r.txt")},
@@ -671,7 +671,7 @@ class TestLoadExperimentConfig:
         }
         with open(config_dir / "experiment.yaml", "w") as f:
             yaml.dump(exp_yaml, f)
-        models_yaml = {"models": {"llama": {"name": "llama", "groq_model_id": "llama-3.1-70b"}}}
+        models_yaml = {"models": {"llama": {"name": "llama", "model_id": "llama-3.1-70b"}}}
         with open(config_dir / "models.yaml", "w") as f:
             yaml.dump(models_yaml, f)
 
@@ -681,7 +681,7 @@ class TestLoadExperimentConfig:
             (prompts_dir / fname).write_text("prompt")
 
         config = load_experiment_config(config_dir)
-        assert config.models[0].groq_model_id == "llama-3.1-70b"
+        assert config.models[0].model_id == "llama-3.1-70b"
 
     def test_with_normalization_yaml(self, tmp_path):
         config_dir = tmp_path / "config_with_norm"
@@ -689,7 +689,7 @@ class TestLoadExperimentConfig:
         exp_yaml = {
             "experiment": {"name": "test", "version": "1.0"},
             "datasets": [{"name": "sst2", "huggingface_id": "stanfordnlp/sst2", "split": "v", "sample_size": 100, "labels": ["a", "b"]}],
-            "models": [{"name": "llama", "groq_model_id": "llama-3.3-70b"}],
+            "models": [{"name": "llama", "model_id": "llama-3.3-70b"}],
             "explanation_strategies": [
                 {"id": "H", "name": "h", "prompt_file": str(tmp_path / "prompts/h.txt")},
                 {"id": "R", "name": "r", "prompt_file": str(tmp_path / "prompts/r.txt")},
@@ -730,7 +730,7 @@ class TestConfigValidatorExtra:
         config = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g/sst2", split="s", sample_size=100, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[
                 ExplanationStrategyConfig(id="H", name="h", prompt_file=str(prompts_dir / "h.txt"), n_tokens=3),
@@ -754,7 +754,7 @@ class TestSaveConfigToFileEdgeCases:
         config = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g/sst2", split="s", sample_size=100, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[],
             normalization=NormalizationConfig(),
@@ -777,7 +777,7 @@ class TestLoadAndValidateConfigExtra:
         exp_yaml = {
             "experiment": {"name": "test", "version": "1.0"},
             "datasets": [{"name": "sst2", "huggingface_id": "stanfordnlp/sst2", "split": "v", "sample_size": 100, "labels": ["a", "b"]}],
-            "models": [{"name": "llama", "groq_model_id": "llama-3.3-70b"}],
+            "models": [{"name": "llama", "model_id": "llama-3.3-70b"}],
             "explanation_strategies": [
                 {"id": "H", "name": "h", "prompt_file": str(tmp_path / "prompts/h.txt"), "n_tokens": 3},
                 {"id": "R", "name": "r", "prompt_file": str(tmp_path / "prompts/r.txt")},

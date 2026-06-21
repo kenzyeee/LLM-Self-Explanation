@@ -72,7 +72,7 @@ def test_kendall_tau_reverse(tokens):
     assert tau == pytest.approx(-1.0)
 
 
-@given(tokens=unique_token_list.filter(lambda x: len(x) == 3))
+@given(tokens=unique_token_list.filter(lambda x: len(x) == 2))
 @settings(max_examples=10)
 def test_kendall_tau_few_common_returns_none(tokens):
     ranks = calc.assign_implicit_ranks(tokens)

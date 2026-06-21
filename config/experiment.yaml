@@ -23,10 +23,10 @@ datasets:
     sample_size: 10
     labels: ["World", "Sports", "Business", "Sci/Tech"]
 
-# Models
+# Models (single model for the pilot)
 models:
-  - name: "llama-3.3-70b"
-    groq_model_id: "llama-3.3-70b-versatile"
+  - name: "llama-3.3-70b-versatile"
+    model_id: "llama-3.3-70b-versatile"
 
 # Inference Settings
 inference:
@@ -43,7 +43,7 @@ explanation_strategies:
   - id: "H"
     name: "highlighting"
     prompt_file: "prompts/highlighting.txt"
-    n_tokens: 3
+    n_tokens: 5
   - id: "R"
     name: "rationale"
     prompt_file: "prompts/rationale.txt"
@@ -57,13 +57,12 @@ explanation_strategies:
 
 # Normalization
 normalization:
-  version: "v1.0"
+  version: "v2.0"
   lowercase: true
   remove_punctuation: true
   remove_stopwords: true
-  use_lemmatization: true
+  use_lemmatization: false
   stopword_language: "english"
-  lemmatizer: "wordnet"
 
 # Metrics
 metrics:
@@ -72,10 +71,11 @@ metrics:
   confidence_level: 0.95
   bonferroni_correction: true
 
-# Validity Testing
+# Validity / Erasure (faithfulness anchor — a SEPARATE consistency axis, not ground truth)
 validity:
   masking_token: "[MASK]"
-  n_random_baseline_trials: 10
+  n_random_baseline_trials: 10          # random-erasure control draws, averaged
+  erasure_operators: ["mask", "delete"] # run both; ICE (2026) shows operator choice flips conclusions
 
 # Ablation Studies
 ablations:

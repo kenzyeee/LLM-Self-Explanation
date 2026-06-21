@@ -1,11 +1,13 @@
 # Model-Specific Configurations
 
 models:
-  llama-3.1-8b:
-    name: "llama-3.1-8b"
-    groq_model_id: "llama-3.1-8b-instant"
-    description: "Meta's Llama 3.1 8B parameter model (via Groq)"
-    context_window: 8192
+  llama-3.3-70b-versatile:
+    name: "llama-3.3-70b-versatile"
+    model_id: "llama-3.3-70b-versatile"
+    description: "Llama 3.3 70B Versatile (via Groq)"
+    context_window: 131072
     default_temperature: 0
     default_top_p: 1
-    supports_function_calling: false
+    supports_function_calling: true
+    # NOTE: Groq returns 400 'logprobs not supported' for this model — confidence
+    # via logprobs is unavailable; the confidence axis is intentionally dropped.

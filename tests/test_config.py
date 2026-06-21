@@ -50,15 +50,15 @@ class TestDatasetConfig:
 
 class TestModelConfig:
     def test_defaults(self):
-        cfg = ModelConfig(name="llama", groq_model_id="llama-3.3-70b-versatile")
+        cfg = ModelConfig(name="llama", model_id="llama-3.3-70b-versatile")
         assert cfg.context_window == 8192
         assert cfg.default_temperature == 0.0
         assert cfg.supports_function_calling is False
 
     def test_to_dict(self):
-        cfg = ModelConfig(name="llama", groq_model_id="llama-3.3-70b-versatile")
+        cfg = ModelConfig(name="llama", model_id="llama-3.3-70b-versatile")
         d = cfg.to_dict()
-        assert d["groq_model_id"] == "llama-3.3-70b-versatile"
+        assert d["model_id"] == "llama-3.3-70b-versatile"
 
 
 class TestInferenceConfig:
@@ -176,7 +176,7 @@ class TestConfig:
         cfg = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="stanfordnlp/sst2", split="train", sample_size=100, labels=["pos", "neg"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama-3.3-70b-versatile")],
+            models=[ModelConfig(name="llama", model_id="llama-3.3-70b-versatile")],
             inference=InferenceConfig(),
             explanation_strategies=[ExplanationStrategyConfig(id="H", name="h", prompt_file="p.txt")],
             normalization=NormalizationConfig(),
@@ -193,7 +193,7 @@ class TestConfig:
         cfg = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g", split="s", sample_size=1, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[ExplanationStrategyConfig(id="H", name="h", prompt_file="p.txt")],
             normalization=NormalizationConfig(),
@@ -210,7 +210,7 @@ class TestConfig:
         cfg = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g", split="s", sample_size=1, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[ExplanationStrategyConfig(id="H", name="h", prompt_file="p.txt")],
             normalization=NormalizationConfig(),
@@ -227,7 +227,7 @@ class TestConfig:
         cfg = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g", split="s", sample_size=1, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[ExplanationStrategyConfig(id="H", name="h", prompt_file="p.txt")],
             normalization=NormalizationConfig(),
@@ -244,7 +244,7 @@ class TestConfig:
         cfg = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
             datasets=[DatasetConfig(name="sst2", huggingface_id="g", split="s", sample_size=1, labels=["a", "b"])],
-            models=[ModelConfig(name="llama", groq_model_id="llama")],
+            models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[ExplanationStrategyConfig(id="H", name="h", prompt_file="p.txt")],
             normalization=NormalizationConfig(),

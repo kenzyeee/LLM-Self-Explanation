@@ -121,7 +121,7 @@ def compute_ecs_from_token_sets(sets: Dict[str, Set[str]], calc: MetricsCalculat
 
 async def run_classify(engine, class_prompt, parser, label_set):
     result = await engine.classify(class_prompt)
-    predicted_label, confidence = parser.parse_classification(result.raw_response, label_set)
+    predicted_label = parser.parse_classification(result.raw_response, label_set)
     return predicted_label, result.raw_response
 
 
@@ -146,7 +146,7 @@ async def run_ablations(config, args):
     parser = Parser()
     calc = MetricsCalculator()
     engine = InferenceEngine(
-        model_name=config.models[0].groq_model_id,
+        model_name=config.models[0].model_id,
         max_retries=config.inference.max_retries,
         concurrent_requests=config.inference.concurrent_requests,
     )

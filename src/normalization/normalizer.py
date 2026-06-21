@@ -5,18 +5,9 @@ import logging
 import difflib
 from typing import List, Set, Optional
 
-try:
-    import nltk
-    import nltk.data
-    from nltk.corpus import stopwords
-    from nltk.stem import WordNetLemmatizer
-    nltk.download('stopwords', quiet=True)
-    nltk.download('wordnet', quiet=True)
-except ImportError:
-    stopwords = None
-    WordNetLemmatizer = None
-
 logger = logging.getLogger(__name__)
+
+_NLTK_DATA_READY = False
 
 DISCOURSE_WORDS = {
     "correct", "incorrect", "classification", "classify",
@@ -30,57 +21,75 @@ DISCOURSE_WORDS = {
     "important",
     "positive", "negative", "neutral",
     "entailment", "contradiction",
-    "world", "sports", "business", "sci/tech",
+    "entail", "contradict",
+    "premise", "hypothesis",
     "us", "u",
 }
 
 SEP_PATTERN = re.compile(r'\[SEP\]', re.IGNORECASE)
 HTML_ENTITY_PATTERN = re.compile(r'&[a-zA-Z]+;|&#\d+;')
 
+POLARITY_WORDS = {"no", "not", "never", "nor", "neither", "none", "nobody", "nothing", "nowhere",
+                   "every", "some", "any", "all"}
 FALLBACK_STOPWORDS = {
-    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from",
-    "in", "is", "it", "of", "on", "or", "that", "the", "this", "to",
-    "was", "were", "with",
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "up", "about", "into", "over", "after",
+    "is", "are", "was", "were", "be", "been", "being", "have", "has",
+    "had", "do", "does", "did", "will", "would", "can", "could", "shall",
+    "should", "may", "might", "i", "you", "he", "she", "it", "we", "they",
+    "me", "him", "her", "us", "them", "my", "your", "his", "its", "our",
+    "their", "this", "that", "these", "those", "very",
+    "just", "then", "than", "so", "too", "also", "now", "here", "there",
 }
 
 
-class FallbackLemmatizer:
-    def lemmatize(self, token: str) -> str:
-        if not token.isalpha():
-            return token
-        if len(token) > 4 and token.endswith("vies"):
-            return token[:-1]
-        if len(token) > 3 and token.endswith("ies"):
-            return f"{token[:-3]}y"
-        if len(token) > 3 and token.endswith("s") and not token.endswith("ss"):
-            return token[:-1]
-        return token
+def _ensure_nltk_data() -> None:
+    """Download required NLTK corpora once, lazily (never at import time).
 
-
-def _wordnet_available() -> bool:
+    Keeping this out of module import makes importing the package fast and
+    offline-safe; the (cached, no-op-after-first) download runs the first time
+    a Normalizer is constructed.
+    """
+    global _NLTK_DATA_READY
+    if _NLTK_DATA_READY:
+        return
     try:
-        nltk.data.find("corpora/wordnet")
-        return True
-    except Exception:
-        return False
+        import nltk
+        for resource in ('stopwords', 'wordnet', 'omw-1.4'):
+            try:
+                nltk.download(resource, quiet=True)
+            except Exception:
+                pass
+    except ImportError:
+        pass
+    _NLTK_DATA_READY = True
 
 
 class Normalizer:
-    def __init__(self, use_lemmatization=True, remove_stopwords=True):
+    def __init__(self, use_lemmatization: bool = True, remove_stopwords: bool = True,
+                 lemmatizer: str = "wordnet"):
         self.use_lemmatization = use_lemmatization
         self.remove_stopwords = remove_stopwords
-        if use_lemmatization and WordNetLemmatizer and _wordnet_available():
-            self.lemmatizer = WordNetLemmatizer()
-        elif use_lemmatization:
-            self.lemmatizer = FallbackLemmatizer()
+        _ensure_nltk_data()
+        if remove_stopwords:
+            try:
+                from nltk.corpus import stopwords as nltk_stopwords
+                self.stop_words = set(nltk_stopwords.words('english'))
+            except Exception:
+                self.stop_words = FALLBACK_STOPWORDS.copy()
         else:
-            self.lemmatizer = None
-        try:
-            self.stop_words = set(stopwords.words('english')) if remove_stopwords and stopwords else set()
-        except Exception:
             self.stop_words = set()
-        if remove_stopwords and not self.stop_words:
-            self.stop_words = FALLBACK_STOPWORDS
+        self._lemmatizer = None
+        if use_lemmatization:
+            if lemmatizer != "wordnet":
+                logger.warning(f"Lemmatizer '{lemmatizer}' not implemented; using WordNet instead.")
+            try:
+                from nltk.stem import WordNetLemmatizer
+                self._lemmatizer = WordNetLemmatizer()
+                self._lemmatizer.lemmatize("tests")  # probe: surface a missing corpus now, not per-token
+            except Exception:
+                logger.warning("WordNet data unavailable; proceeding without lemmatization.")
+                self._lemmatizer = None
 
     def pre_normalize(self, token: str) -> str:
         """Light normalization for input-anchored matching (no lemmatization)."""
@@ -104,13 +113,18 @@ class Normalizer:
         if not t:
             return None
 
-        if self.remove_stopwords and t in self.stop_words:
+        if self._lemmatizer is not None:
+            # No POS context is available for a lone token, so apply verb-then-noun
+            # WordNet lemmatization — a deterministic heuristic that collapses the
+            # most common inflections (e.g. "running"->"run", "movies"->"movie").
+            t = self._lemmatizer.lemmatize(self._lemmatizer.lemmatize(t, 'v'), 'n')
+
+        if t in POLARITY_WORDS:
+            return t
+        if t in self.stop_words:
             return None
         if t in DISCOURSE_WORDS:
             return None
-
-        if self.use_lemmatization and self.lemmatizer:
-            t = self.lemmatizer.lemmatize(t)
 
         return t if t else None
 
@@ -133,12 +147,13 @@ class Normalizer:
         return t
 
     def is_anchored(self, token: str, input_text: str) -> bool:
-        """Check if a token (after pre-normalization) appears in the input text."""
+        """Check if token appears as a whole word in input_text (word-boundary match)."""
         norm_token = self.pre_normalize(token)
         if not norm_token:
             return False
         norm_input = self.normalize_input_text(input_text)
-        return norm_token in norm_input
+        pattern = re.compile(r'\b' + re.escape(norm_token) + r'\b')
+        return bool(pattern.search(norm_input))
 
     def _exact_or_fuzzy_match(self, token: str, input_text: str) -> bool:
         if token.lower() in input_text.lower():
@@ -169,30 +184,3 @@ class Normalizer:
                 if fuzzy_only:
                     logger.info(f"Evidence token '{token}' matched via fuzzy similarity (not exact)")
         return violations
-
-    def extract_content_words_from_rationale(self, rationale: str) -> Set[str]:
-        """Legacy method - kept for backward compatibility. Use extract_evidence_tokens instead."""
-        try:
-            from nltk.tokenize import word_tokenize
-            from nltk import pos_tag
-            tokens = word_tokenize(rationale)
-            tagged = pos_tag(tokens)
-            content_tags = {'NN', 'NNS', 'NNP', 'NNPS', 'VB', 'VBD', 'VBG', 'VBN',
-                            'VBP', 'VBZ', 'JJ', 'JJR', 'JJS', 'RB', 'RBR', 'RBS'}
-            content_words = [word for word, tag in tagged if tag in content_tags]
-            return self.normalize_tokens(content_words)
-        except Exception:
-            tokens = rationale.split()
-            return self.normalize_tokens(tokens)
-
-    def extract_counterfactual_diff(self, original: str, counterfactual: str) -> Set[str]:
-        orig_words = original.lower().split()
-        cf_words = counterfactual.lower().split()
-        min_len = min(len(orig_words), len(cf_words))
-        diff = []
-        for i in range(min_len):
-            if orig_words[i] != cf_words[i]:
-                diff.append(orig_words[i])
-        if len(cf_words) < len(orig_words):
-            diff.extend(orig_words[len(cf_words):])
-        return self.normalize_tokens(list(diff))

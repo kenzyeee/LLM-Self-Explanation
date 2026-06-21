@@ -89,7 +89,7 @@ class TestMetricsCalculator:
         }
         ecs = calc.compute_ecs(agreements)
         import pytest
-        assert ecs == pytest.approx(0.35)  # (0.5+0.3+0.4+0.2+0.6+0.1)/6
+        assert ecs == pytest.approx(0.34)  # (0.5+0.3+0.2+0.6+0.1)/5, H-RO excluded
 
     def test_ecs_missing_pair(self, calc):
         agreements = {("H", "R"): 0.5, ("H", "CF"): 0.3}
@@ -138,3 +138,41 @@ class TestMetricsCalculator:
         cc3 = calc.compute_consensus_core(explanations, 3)
         cc4 = calc.compute_consensus_core(explanations, 4)
         assert cc4.issubset(cc3)
+
+
+class TestExpectedRandomOverlapAndTau:
+    @pytest.fixture
+    def calc(self):
+        return MetricsCalculator()
+
+    def test_random_overlap_degenerate_zero(self, calc):
+        assert calc.expected_random_overlap(0, 5, 50) == (0.0, 0.0)
+        assert calc.expected_random_overlap(5, 5, 0) == (0.0, 0.0)
+
+    def test_random_overlap_in_unit_interval(self, calc):
+        ej, eo = calc.expected_random_overlap(5, 5, 50)
+        assert 0.0 <= ej <= 1.0 and 0.0 <= eo <= 1.0
+
+    def test_random_overlap_smaller_vocab_more_chance(self, calc):
+        # Smaller vocabulary => higher expected overlap by chance (motivates lift).
+        ej_large, _ = calc.expected_random_overlap(5, 5, 100)
+        ej_small, _ = calc.expected_random_overlap(5, 5, 10)
+        assert ej_small > ej_large
+
+    def test_random_overlap_deterministic(self, calc):
+        assert calc.expected_random_overlap(4, 6, 40) == calc.expected_random_overlap(4, 6, 40)
+
+    def test_random_overlap_size_exceeds_vocab(self, calc):
+        # Sizes clamp to vocab; identical full draws => overlap 1.0.
+        ej, eo = calc.expected_random_overlap(10, 10, 5)
+        assert ej == pytest.approx(1.0) and eo == pytest.approx(1.0)
+
+    def test_tau_three_common_returns_none(self, calc):
+        r1 = [("a", 1), ("b", 2), ("c", 3)]
+        r2 = [("a", 1), ("b", 2), ("c", 3)]
+        assert calc.compute_kendalls_tau(r1, r2) is None  # 3 common < 4
+
+    def test_tau_four_common_returns_value(self, calc):
+        r1 = [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+        r2 = [("a", 1), ("b", 2), ("d", 3), ("c", 4)]
+        assert calc.compute_kendalls_tau(r1, r2) is not None

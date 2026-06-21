@@ -3,18 +3,17 @@ from unittest.mock import AsyncMock, patch, MagicMock, PropertyMock
 from src.inference.inference_engine import InferenceEngine, ClassificationResult, ExplanationResult
 from src.utils.exceptions import APIError
 from unittest.mock import MagicMock
+from openai import RateLimitError, APIError as OpenAIAPIError
 
 
 def make_rate_limit_error(msg="rate limited"):
-    import groq
     mock_response = MagicMock()
-    return groq.RateLimitError(msg, response=mock_response, body=None)
+    return RateLimitError(msg, response=mock_response, body=None)
 
 
 def make_api_error(msg="api error"):
-    import groq
     mock_request = MagicMock()
-    return groq.APIError(msg, request=mock_request, body=None)
+    return OpenAIAPIError(msg, request=mock_request, body=None)
 
 
 class TestInferenceEngineInit:

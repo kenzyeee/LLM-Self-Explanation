@@ -1,6 +1,9 @@
 The text was classified as: {predicted_label}
 
-Identify the 3 most important single tokens (words) from the input text that support this classification. List them in order of importance.
+Here is the exact text that was classified:
+"{input_text}"
 
-Return only valid JSON — each token must be copied verbatim from the input text:
-{{"highlights":["token1","token2","token3"]}}
+For EACH word in the text above, assign an importance score from 1 (irrelevant) to 10 (critical for this classification). Every word in that text must receive a score — no omissions, no extra words. Scores reflect how strongly each word supports the predicted label.
+
+Return only valid JSON. Each key must be a word copied verbatim from the original text, each value an integer 1-10:
+{{"salience":{{"WORD":SCORE, "WORD":SCORE, ...}}}}
