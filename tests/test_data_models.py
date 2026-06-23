@@ -1,7 +1,11 @@
 import json
+import sys
 import tempfile
 from pathlib import Path
 from datetime import datetime
+
+# Ensure the project root is on sys.path so 'src' is importable
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.data_models import (
     InstanceResult, AggregateMetrics, ValidityTestResult,
@@ -230,3 +234,45 @@ class TestConvenienceFunctions:
         loaded = load_validity_results(str(f))
         assert len(loaded) == 1
         assert loaded[0].instance_id == "1"
+
+
+if __name__ == "__main__":
+    import traceback
+
+    passed = 0
+    failed = 0
+
+    # Collect all test classes and their test methods
+    test_classes = [
+        TestInstanceResult, TestAggregateMetrics, TestValidityTestResult,
+        TestCorrelationResult, TestStatisticalTest, TestFlipResult,
+        TestExecutionSummary, TestAggregateValidityResults, TestConvenienceFunctions,
+    ]
+
+    for cls in test_classes:
+        instance = cls()
+        for method_name in sorted(dir(instance)):
+            if not method_name.startswith("test_"):
+                continue
+            method = getattr(instance, method_name)
+            try:
+                import inspect
+                sig = inspect.signature(method)
+                if "tmp_path" in sig.parameters:
+                    # Provide a temporary directory for tests needing tmp_path
+                    with tempfile.TemporaryDirectory() as td:
+                        method(Path(td))
+                else:
+                    method()
+                passed += 1
+                print(f"  PASS  {cls.__name__}.{method_name}")
+            except Exception:
+                failed += 1
+                print(f"  FAIL  {cls.__name__}.{method_name}")
+                traceback.print_exc()
+                print()
+
+    print(f"\n{'='*50}")
+    print(f"Results: {passed} passed, {failed} failed, {passed + failed} total")
+    if failed:
+        sys.exit(1)
