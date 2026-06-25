@@ -37,8 +37,8 @@ def show_summary(out):
     print(f"  Kendall tau:  {overall['mean_kendall_H_RO']:.4f}")
     print(f"  CC3:          {overall['pct_instances_with_cc3']:.0f}%  CC4: {overall['pct_instances_with_cc4']:.0f}%")
     print(f"  Introduced-concept rate (R): {overall.get('introduced_concept_rate', 0):.3f}")
-    print(f"  CF validity:  free={overall.get('cf_free_validity_rate', 0)*100:.0f}%  minimal={overall.get('cf_minimal_validity_rate', 0)*100:.0f}%"
-          f"   |  minimality: free={overall.get('mean_cf_free_minimality', 0):.3f} minimal={overall.get('mean_cf_minimal_minimality', 0):.3f}")
+    print(f"  CF validity:  minimal(canonical)={overall.get('cf_canonical_validity_rate', 0)*100:.0f}%  free(contrast)={overall.get('cf_contrast_validity_rate', 0)*100:.0f}%"
+          f"   |  minimality: minimal={overall.get('mean_cf_canonical_minimality', 0):.3f} free={overall.get('mean_cf_contrast_minimality', 0):.3f}")
 
     print("\n  -- Sampling Log --")
     print(f"  {'Dataset':<10} {'Req':>3} {'Got':>3} {'Wrong':>5}")

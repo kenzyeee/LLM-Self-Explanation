@@ -1,9 +1,8 @@
 The text was classified as: {predicted_label}
 
-Here is the exact text that was classified:
-"{input_text}"
+Text: "{input_text}"
 
-Write exactly one sentence explaining why this text receives this classification. Be specific about which aspects of the text support this judgment. Do not list individual words — write a natural sentence.
+In one sentence, explain why the text was classified as {predicted_label}.
 
 Return only valid JSON:
-{{"rationale":"<one sentence explanation>"}}
+{{"rationale": "<one-sentence explanation>"}}

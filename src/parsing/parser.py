@@ -2,12 +2,30 @@ import difflib
 import json
 import logging
 import re
+import string
 from typing import Tuple, List, Optional, Set
 
 from src.utils.exceptions import ParsingError
 from src.normalization.normalizer import DISCOURSE_WORDS
 
 logger = logging.getLogger(__name__)
+
+
+def dynamic_k(input_text: str, cap: Optional[int] = None) -> int:
+    """Length-proportional top-k for feature-importance set extraction.
+
+    Huang et al. 2023 (arXiv:2310.11207) and "Dynamic Top-k Estimation"
+    (arXiv:2310.05619) select k proportional to input length rather than a fixed
+    constant, which reduces spurious cross-method disagreement driven by set size.
+    k = max(3, round(L / 5)) where L is the content-word count, capped at `cap`
+    (the number of available valid tokens) when provided.
+    """
+    words = input_text.split()
+    n_content = sum(1 for w in words if w.strip(string.punctuation))
+    k = max(3, round(n_content / 5))
+    if cap is not None:
+        k = min(k, cap)
+    return k
 
 POLARITY_WORDS = {"no", "not", "never", "nor", "neither", "none", "nobody", "nothing", "nowhere"}
 STOPWORDS = set()
@@ -25,9 +43,10 @@ except Exception:
         "their", "this", "that", "these", "those", "not", "no", "nor",
     }
 
-# Dependency labels that capture meaningful content from a rationale sentence
-# per Algorithm 1 Step 7 in the original paper spec
-RATIONALE_DEP_LABELS = {"nsubj", "nsubjpass", "dobj", "attr", "ROOT", "amod", "acomp", "pobj", "agent"}
+# Open-class (content-word) POS tags. Rationale token extraction keeps the lemmas
+# of content words (ERASER / rationalization survey arXiv:2301.08912), rather than a
+# hand-picked dependency-label subset which has no published precedent.
+CONTENT_POS = {"NOUN", "PROPN", "VERB", "ADJ", "ADV"}
 
 # spaCy model loaded lazily
 _nlp = None
@@ -73,9 +92,18 @@ class Parser:
         Expected format:
           {"salience": {"word1": score, "word2": score, ...}}
 
-        Returns top-5 words by salience score that anchor in the input text.
-        Also stores the full score-sorted list in self._h_salience_ordered
-        for downstream Kendall τ comparison with RO.
+        Selection method (deterministic):
+          1. Keep entries whose key is a single word, scores >= 1, that anchor in the
+             input text. Pure-punctuation / empty keys (model padding such as "(" or
+             ".") are dropped silently — they are noise, not evidence.
+          2. Restrict to *content* tokens: anything the normalizer would discard
+             (stopwords, discourse/label words, punctuation) is removed BEFORE ranking,
+             while polarity words ("no", "not") are retained. This is what previously
+             made H sets erratically small — top-scored stopwords ("very", "too") were
+             selected and only dropped during later normalization.
+          3. Sort by salience (descending) and return the length-proportional top-k
+             (dynamic_k). The full content-word order is stored in
+             self._h_salience_ordered for downstream Kendall τ / RBO comparison with RO.
         """
         self._h_salience_ordered: List[str] = []
         text = raw_response.strip()
@@ -85,7 +113,6 @@ class Parser:
         salience = obj.get("salience", {})
         if not isinstance(salience, dict) or not salience:
             raise ParsingError("Salience must be a non-empty dict of word -> score")
-        # Validate scores and filter anchored words
         scored = []
         for word, score in salience.items():
             if not isinstance(word, str) or not word.strip():
@@ -95,16 +122,25 @@ class Parser:
             if not self._is_single_word(word):
                 logger.warning(f"H salience item '{word}' is not a single word — discarding")
                 continue
+            # Drop pure-punctuation / empty-after-strip keys silently (model noise).
+            if not word.strip(string.punctuation + "“”‘’\"'`"):
+                continue
             if not skip_validation and not normalizer.is_anchored(word, input_text):
                 logger.warning(f"H salience word '{word}' not anchored — discarding")
                 continue
+            # Restrict ranking to content tokens (keepable under normalization). This
+            # keeps polarity words but removes stopwords/discourse words so the top-k
+            # are stable, content-bearing evidence rather than padding.
+            if normalizer.normalize(word) is None:
+                continue
             scored.append((word, float(score)))
         if len(scored) < 2:
-            raise ParsingError(f"Only {len(scored)} valid salience entries (need >=2)")
-        # Sort descending by score, then return top 5
+            raise ParsingError(f"Only {len(scored)} valid content salience entries (need >=2)")
+        # Sort descending by score, then return the length-proportional top-k.
         scored.sort(key=lambda x: -x[1])
         self._h_salience_ordered = [w for w, _ in scored]
-        return [w for w, _ in scored[:5]]
+        k = dynamic_k(input_text, cap=len(scored))
+        return [w for w, _ in scored[:k]]
 
     def parse_rationale(self, raw_response: str, input_text: str, normalizer, skip_validation: bool = False) -> Tuple[str, List[str]]:
         # Reset per-call; populated with rationale concepts that have NO input
@@ -121,9 +157,21 @@ class Parser:
             return rationale, []
         nlp = _get_spacy()
         if nlp is None:
-            logger.warning("spaCy not available, falling back to word-token extraction from rationale")
-            tokens = rationale.split()
-            return rationale, tokens[:5]
+            logger.warning("spaCy not available, falling back to content-word extraction from rationale")
+            anchored = []
+            seen = set()
+            for raw_tok in rationale.split():
+                tok = raw_tok.strip(string.punctuation).lower()
+                if not tok or len(tok) <= 1 or tok in STOPWORDS or tok in DISCOURSE_WORDS:
+                    continue
+                if tok in seen:
+                    continue
+                seen.add(tok)
+                if normalizer.is_anchored(tok, input_text):
+                    anchored.append(tok)
+            if not anchored:
+                raise ParsingError("No evidence tokens could be extracted from rationale (all unanchored)")
+            return rationale, anchored
         # Step 1: extract hyphenated compounds from rationale that appear verbatim in input
         hyphenated_in_rationale = re.findall(r'\b\w+-\w+\b', rationale)
         hyphenated_matches = set()
@@ -131,30 +179,30 @@ class Parser:
             compound_lower = compound.lower()
             if normalizer.is_anchored(compound_lower, input_text):
                 hyphenated_matches.add(compound_lower)
-        # Step 2: dependency-parse the rationale sentence
+        # Step 2: POS-tag the rationale and keep open-class content-word lemmas
         doc = nlp(rationale)
-        dep_tokens = set()
+        content_tokens = set()
         for token in doc:
-            if token.dep_ in RATIONALE_DEP_LABELS:
+            if token.pos_ in CONTENT_POS:
                 lemma = token.lemma_.lower().strip()
                 if (lemma and lemma not in STOPWORDS and lemma not in POLARITY_WORDS
                         and lemma not in DISCOURSE_WORDS and len(lemma) > 1):
-                    dep_tokens.add(lemma)
-        if not dep_tokens:
-            dep_tokens = set()
+                    content_tokens.add(lemma)
+        if not content_tokens:
+            content_tokens = set()
             for token in doc:
                 lemma = token.lemma_.lower().strip()
                 if lemma and lemma not in STOPWORDS and lemma not in DISCOURSE_WORDS and len(lemma) > 1:
-                    dep_tokens.add(lemma)
-        # Merge hyphenated compound matches into dep_tokens
-        dep_tokens.update(hyphenated_matches)
+                    content_tokens.add(lemma)
+        # Merge hyphenated compound matches into content_tokens
+        content_tokens.update(hyphenated_matches)
         # Step 3: anchored rationale extraction — keep only tokens that directly appear in input text.
         # Tokens with no anchor are logged as INTRODUCED concepts (post-hoc rationalization signal),
         # not silently dropped.
         anchored = []
         introduced = []
         seen = set()
-        for tok in dep_tokens:
+        for tok in content_tokens:
             if tok in seen:
                 continue
             seen.add(tok)
@@ -192,12 +240,16 @@ class Parser:
             raise ParsingError(f"New prediction '{new_pred}' not in label set")
         if new_pred == original_label:
             raise ParsingError("Counterfactual prediction did not flip")
-        # Extract changed tokens via difflib
+        if rewritten.strip() == input_text.strip():
+            raise ParsingError("Counterfactual text is identical to original")
+        # Extract changed tokens via difflib. A flip achieved purely by INSERTING a word
+        # (e.g. negating a hypothesis by adding "not") changes the text but leaves no
+        # original token replaced or deleted, so there is no original-token attribution
+        # for ECS — treat as non-attributable rather than mislabelling it "identical".
         from_tokens = self._extract_changed_tokens(input_text, rewritten)
         if not from_tokens:
-            raise ParsingError("No tokens changed between original and rewritten text (identical text)")
-        if rewritten == input_text:
-            raise ParsingError("Counterfactual text is identical to original")
+            raise ParsingError("Counterfactual flips only by insertion(s); no original token "
+                               "was replaced or deleted to attribute the prediction to")
         # Validate edit ratio (word-level Levenshtein)
         edit_ratio = self._word_edit_ratio(input_text, rewritten)
         if not skip_validation and edit_ratio > max_edit_ratio:
@@ -211,10 +263,13 @@ class Parser:
         rew_words = rewritten.strip().split()
         matcher = difflib.SequenceMatcher(None, orig_words, rew_words)
         changed = set()
+        # Strip surrounding punctuation including hyphens/unicode dashes so that an
+        # edited token like "charm-less," diffs down to the bare word "charm-less".
+        strip_chars = string.punctuation + "‐‑‒–—―−"
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag in ('replace', 'delete'):
                 for w in orig_words[i1:i2]:
-                    w_clean = w.strip('.,!?;:\'"()[]{}')
+                    w_clean = w.strip(strip_chars)
                     if w_clean:
                         changed.add(w_clean.lower())
         return changed
@@ -253,25 +308,75 @@ class Parser:
         return result
 
     def _extract_json(self, text: str) -> Optional[dict]:
-        """Try to parse JSON from response text. Handles surrounding text, code fences, etc."""
+        """Try to parse JSON from response text. Handles surrounding text, code fences, etc.
+
+        Adds a repair pass for the most common LLM JSON error: unescaped double quotes
+        inside a string value (e.g. a rationale that quotes a phrase from the text:
+        ``"...the film as being "as seductive as it is haunting" implies..."``). Such
+        responses otherwise fail json.loads and the whole strategy is discarded.
+        """
         text = text.strip()
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            pass
+        candidates = [text]
         m = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', text, re.DOTALL)
         if m:
-            try:
-                return json.loads(m.group(1).strip())
-            except json.JSONDecodeError:
-                pass
+            candidates.append(m.group(1).strip())
         m = re.search(r'\{.*\}', text, re.DOTALL)
         if m:
+            candidates.append(m.group(0))
+        for cand in candidates:
             try:
-                return json.loads(m.group(0))
+                return json.loads(cand)
             except json.JSONDecodeError:
                 pass
+        # Repair pass: re-escape stray quotes inside string values, then retry.
+        for cand in candidates:
+            repaired = self._repair_unescaped_quotes(cand)
+            if repaired != cand:
+                try:
+                    return json.loads(repaired)
+                except json.JSONDecodeError:
+                    pass
         return None
+
+    @staticmethod
+    def _repair_unescaped_quotes(s: str) -> str:
+        """Escape double quotes that appear *inside* a JSON string value.
+
+        Walks the text as a state machine. A quote that opens/closes a string is one
+        whose next non-whitespace neighbour is structural (``: , } ]`` or the string
+        start). Any other quote encountered while inside a string is content and gets
+        backslash-escaped so json.loads can parse it. Already-escaped quotes (\\") and
+        backslashes are passed through untouched.
+        """
+        out = []
+        in_string = False
+        escaped = False
+        n = len(s)
+        for i, c in enumerate(s):
+            if escaped:
+                out.append(c)
+                escaped = False
+                continue
+            if c == '\\':
+                out.append(c)
+                escaped = True
+                continue
+            if c == '"':
+                if not in_string:
+                    in_string = True
+                    out.append(c)
+                else:
+                    j = i + 1
+                    while j < n and s[j] in ' \t\r\n':
+                        j += 1
+                    if j >= n or s[j] in ',}]:':
+                        in_string = False
+                        out.append(c)
+                    else:
+                        out.append('\\"')  # inner content quote — escape it
+                continue
+            out.append(c)
+        return ''.join(out)
 
     @staticmethod
     def _word_edit_ratio(original: str, counterfactual: str) -> float:
@@ -292,4 +397,6 @@ class Parser:
                 cost = 0 if orig_words[i - 1] == cf_words[j - 1] else 1
                 dp[i][j] = min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
         distance = dp[n][m]
-        return distance / max(n, m) if max(n, m) > 0 else 0.0
+        # MiCE (Ross et al. 2021): normalize the word-level Levenshtein distance by the
+        # length of the ORIGINAL input, not max(n, m).
+        return distance / n if n > 0 else 0.0

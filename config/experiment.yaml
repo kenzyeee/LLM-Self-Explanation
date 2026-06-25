@@ -32,7 +32,7 @@ models:
 inference:
   temperature: 0
   top_p: 1
-  max_tokens: 512
+  max_tokens: 1024  # base per-strategy output budget (highlighting gets 2x); engine auto-expands on truncation
   max_retries: 3
   retry_delay_base: 2  # seconds
   concurrent_requests: 2

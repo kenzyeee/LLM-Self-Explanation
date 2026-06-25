@@ -1,17 +1,8 @@
 The text was classified as: {predicted_label}
 
-Here is the exact text that was classified:
-"{input_text}"
+Text: "{input_text}"
 
-Rewrite the text above with MINIMAL changes to flip the classifier's output to {other_labels}. Change as few words as possible — ideally 1-3 words. Keep the rest identical.
-
-Rules:
-- Change as few words as possible
-- The rewritten text must be a minimal variation of the original
-- The label must change to one of: {other_labels}
+Edit the text so that it is classified as {other_labels_quoted} instead. Make as few edits as possible.
 
 Return only valid JSON:
-{{"rewritten": "<minimally changed text>", "new_prediction": "<one of: {other_labels}>"}}
-
-If no minimal change can plausibly flip the label, return:
-{{"rewritten": null, "new_prediction": null}}
+{{"rewritten": "<edited text>", "new_prediction": "<one of: {other_labels}>"}}

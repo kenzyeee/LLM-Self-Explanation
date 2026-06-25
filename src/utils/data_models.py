@@ -103,16 +103,21 @@ class InstanceResult:
     # --- D1: ECS as lift over a random-selection baseline (the headline number) ---
     ecs_random: Optional[float] = None
     ecs_lift: Optional[float] = None
-    # --- D2: CF dual variant. Existing cf_* fields describe the canonical CF-free
-    #         variant (used in ECS pairs); cf_minimal_* is the minimality probe. ---
-    cf_free_minimality: Optional[float] = None
-    cf_minimal_valid: bool = False
-    cf_minimal_flip_verified: bool = False
-    cf_minimal_minimality: Optional[float] = None
-    cf_minimal_tokens: Set[str] = field(default_factory=set)
-    cf_minimal_text: str = ""
+    # --- D2: CF dual variant. The generic cf_* / counterfactual_* fields describe the
+    #         CANONICAL CF = the minimal contrastive edit (MiCE), used in ECS;
+    #         cf_canonical_minimality is its minimality. cf_contrast_* is the secondary
+    #         FREE/unconstrained edit, a validity-minimality reference NOT used in ECS. ---
+    cf_canonical_minimality: Optional[float] = None
+    cf_contrast_valid: bool = False
+    cf_contrast_flip_verified: bool = False
+    cf_contrast_minimality: Optional[float] = None
+    cf_contrast_tokens: Set[str] = field(default_factory=set)
+    cf_contrast_text: str = ""
     # --- D6: introduced-concept rate (fraction of rationale concepts absent from input) ---
     r_introduced_concept_rate: Optional[float] = None
+    # Strategies whose elicitation hit the token limit (finish_reason="length") and could
+    # not be recovered — these are invalid for a token-limit reason, not a model-content one.
+    truncated_strategies: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         base = {'instance_id': self.instance_id, 'dataset': self.dataset, 'model': self.model,
@@ -165,13 +170,14 @@ class InstanceResult:
                      'redaction_H': self.redaction_H.to_dict() if self.redaction_H else None,
                      'redaction_RO': self.redaction_RO.to_dict() if self.redaction_RO else None,
                      'ecs_random': self.ecs_random, 'ecs_lift': self.ecs_lift,
-                     'cf_free_minimality': self.cf_free_minimality,
-                     'cf_minimal_valid': self.cf_minimal_valid,
-                     'cf_minimal_flip_verified': self.cf_minimal_flip_verified,
-                     'cf_minimal_minimality': self.cf_minimal_minimality,
-                     'cf_minimal_tokens': sorted(list(self.cf_minimal_tokens)),
-                     'cf_minimal_text': self.cf_minimal_text,
-                     'r_introduced_concept_rate': self.r_introduced_concept_rate}
+                     'cf_canonical_minimality': self.cf_canonical_minimality,
+                     'cf_contrast_valid': self.cf_contrast_valid,
+                     'cf_contrast_flip_verified': self.cf_contrast_flip_verified,
+                     'cf_contrast_minimality': self.cf_contrast_minimality,
+                     'cf_contrast_tokens': sorted(list(self.cf_contrast_tokens)),
+                     'cf_contrast_text': self.cf_contrast_text,
+                     'r_introduced_concept_rate': self.r_introduced_concept_rate,
+                     'truncated_strategies': list(self.truncated_strategies)}
         base.update(metrics)
         return base
 
@@ -233,13 +239,14 @@ class InstanceResult:
             redaction_H=RedactionTestResult.from_dict(data['redaction_H']) if data.get('redaction_H') else None,
             redaction_RO=RedactionTestResult.from_dict(data['redaction_RO']) if data.get('redaction_RO') else None,
             ecs_random=data.get('ecs_random'), ecs_lift=data.get('ecs_lift'),
-            cf_free_minimality=data.get('cf_free_minimality'),
-            cf_minimal_valid=data.get('cf_minimal_valid', False),
-            cf_minimal_flip_verified=data.get('cf_minimal_flip_verified', False),
-            cf_minimal_minimality=data.get('cf_minimal_minimality'),
-            cf_minimal_tokens=set(data.get('cf_minimal_tokens', [])),
-            cf_minimal_text=data.get('cf_minimal_text', ''),
+            cf_canonical_minimality=data.get('cf_canonical_minimality'),
+            cf_contrast_valid=data.get('cf_contrast_valid', False),
+            cf_contrast_flip_verified=data.get('cf_contrast_flip_verified', False),
+            cf_contrast_minimality=data.get('cf_contrast_minimality'),
+            cf_contrast_tokens=set(data.get('cf_contrast_tokens', [])),
+            cf_contrast_text=data.get('cf_contrast_text', ''),
             r_introduced_concept_rate=data.get('r_introduced_concept_rate'),
+            truncated_strategies=data.get('truncated_strategies', []),
         )
 
 
@@ -307,10 +314,10 @@ class AggregateMetrics:
     mean_ecs_lift: float = 0.0
     mean_ecs_random: float = 0.0
     introduced_concept_rate: float = 0.0
-    cf_free_validity_rate: float = 0.0
-    cf_minimal_validity_rate: float = 0.0
-    mean_cf_free_minimality: float = 0.0
-    mean_cf_minimal_minimality: float = 0.0
+    cf_canonical_validity_rate: float = 0.0
+    cf_contrast_validity_rate: float = 0.0
+    mean_cf_canonical_minimality: float = 0.0
+    mean_cf_contrast_minimality: float = 0.0
     mean_ecs_correct: float = 0.0
     n_correct: int = 0
     mean_ecs_incorrect: float = 0.0
@@ -532,6 +539,7 @@ def generate_md_report(
         dur = (t1 - t0).total_seconds()
         n_refused = sum(1 for r in all_results if r.model_refused)
         total_tokens = sum(r.prompt_tokens + r.response_tokens for r in all_results)
+        n_truncated = sum(len(getattr(r, 'truncated_strategies', None) or []) for r in all_results)
         lines.append(f"- **Date:** {t0.strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"- **Duration:** {dur:.1f}s ({dur/60:.1f}m)")
         lines.append(f"- **Model:** {all_results[0].model}")
@@ -539,6 +547,8 @@ def generate_md_report(
         lines.append(f"- **Model refusals:** {n_refused} ({n_refused/max(len(all_results),1)*100:.1f}%)")
         lines.append(f"- **Total tokens processed:** {total_tokens}")
         lines.append(f"- **Avg tokens per instance:** {total_tokens/max(len(all_results),1):.0f}")
+        if n_truncated:
+            lines.append(f"- **Responses truncated at token limit:** {n_truncated} (strategy elicitations cut off even after retry)")
 
     lines.append("")
     lines.append("## Per-Dataset Summary")
@@ -630,10 +640,10 @@ def generate_md_report(
         lines.append(f"| Mean ECS — correct preds (N={overall.n_correct}) | {overall.mean_ecs_correct:.4f} |")
         lines.append(f"| Mean ECS — incorrect preds (N={overall.n_incorrect}) | {overall.mean_ecs_incorrect:.4f} |")
         lines.append(f"| Introduced-concept rate (R) | {overall.introduced_concept_rate:.3f} |")
-        lines.append(f"| CF-free validity rate | {overall.cf_free_validity_rate*100:.0f}% |")
-        lines.append(f"| CF-minimal validity rate | {overall.cf_minimal_validity_rate*100:.0f}% |")
-        lines.append(f"| CF-free minimality (edits/len) | {overall.mean_cf_free_minimality:.3f} |")
-        lines.append(f"| CF-minimal minimality (edits/len) | {overall.mean_cf_minimal_minimality:.3f} |")
+        lines.append(f"| CF canonical (minimal) validity rate | {overall.cf_canonical_validity_rate*100:.0f}% |")
+        lines.append(f"| CF contrast (free) validity rate | {overall.cf_contrast_validity_rate*100:.0f}% |")
+        lines.append(f"| CF canonical (minimal) minimality (edits/len) | {overall.mean_cf_canonical_minimality:.3f} |")
+        lines.append(f"| CF contrast (free) minimality (edits/len) | {overall.mean_cf_contrast_minimality:.3f} |")
         lines.append(f"| Confidence elicitation | Removed — logprobs unsupported on this model; does not proxy faithfulness |")
         lines.append(f"| Mean CC3 size | {overall.mean_cc3_size:.2f} |")
         lines.append(f"| Mean CC4 size | {overall.mean_cc4_size:.2f} |")

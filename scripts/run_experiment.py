@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.load.dataset_loader import DatasetLoader, Instance
 from src.inference.inference_engine import InferenceEngine
-from src.parsing.parser import Parser
+from src.parsing.parser import Parser, dynamic_k
 from src.normalization.normalizer import Normalizer
 from src.metrics.metrics_calculator import MetricsCalculator
 from src.metrics.redaction_test import RedactionTest
@@ -28,7 +28,9 @@ from src.utils.data_models import (
 )
 from src.utils.checkpoint_manager import CheckpointManager
 from src.utils.execution_summary import ExecutionSummary
-from src.utils.exceptions import APIError, RateLimitExhausted, ParsingError, PromptValidationError
+from src.utils.exceptions import (
+    APIError, RateLimitExhausted, DailyRateLimitExhausted, ParsingError, PromptValidationError,
+)
 from src.utils.logging_config import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -42,7 +44,7 @@ REFUSAL_PATTERNS = [
     "i can't provide", "against policy", "not permitted",
 ]
 
-_KNOWN_PLACEHOLDERS = re.compile(r'\{label_set\}|\{input_text\}|\{predicted_label\}|\{other_labels\}')
+_KNOWN_PLACEHOLDERS = re.compile(r'\{label_set\}|\{input_text\}|\{predicted_label\}|\{other_labels_quoted\}|\{other_labels\}')
 
 
 def validate_prompt(prompt_text: str, label_set: Optional[List[str]] = None, context: str = "") -> None:
@@ -53,27 +55,6 @@ def validate_prompt(prompt_text: str, label_set: Optional[List[str]] = None, con
             f"Unrendered placeholders in {context}: {list(set(unrendered))}",
             details={"placeholders": list(set(unrendered)), "prompt_preview": prompt_text[:200]}
         )
-
-
-_TOKENIZER = None
-
-
-def _get_tokenizer():
-    global _TOKENIZER
-    if _TOKENIZER is None:
-        try:
-            import tiktoken
-            _TOKENIZER = tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            _TOKENIZER = None
-    return _TOKENIZER
-
-
-def count_tokens(text: str) -> int:
-    enc = _get_tokenizer()
-    if enc:
-        return len(enc.encode(text))
-    return len(text.split())
 
 
 def compute_prompt_hash(prompt_text: str) -> str:
@@ -103,6 +84,16 @@ def format_explain_prompt(template: str, predicted_label: str, input_text: str =
     return template.format(predicted_label=predicted_label, input_text=input_text, **kwargs)
 
 
+def quote_labels(labels: List[str]) -> str:
+    """Quoted, 'or'-joined target labels for unambiguous CF prose.
+
+    e.g. ['neutral', 'contradiction'] -> '"neutral" or "contradiction"'. Without the
+    quotes, a multiclass target list reads ambiguously ("classified as neutral,
+    contradiction instead of entailment"), which is what the MNLI CF prompt suffered.
+    """
+    return " or ".join(f'"{label}"' for label in labels)
+
+
 def create_prompt_map(config, dataset_name: str = None) -> Dict[str, str]:
     prompts = {}
     for strategy in config.explanation_strategies:
@@ -125,8 +116,9 @@ def create_prompt_map(config, dataset_name: str = None) -> Dict[str, str]:
         if Path(multiclass_path).exists():
             prompts[f"{strategy.id}_explain_multiclass"] = load_prompt(multiclass_path)
 
-    # CF-free (unconstrained) prompts — the canonical CF used for ECS pairs.
-    # The existing CF_explain / CF_explain_multiclass prompts remain the MINIMAL variant.
+    # CF-free (unconstrained) prompts — the secondary validity-minimality CONTRAST,
+    # NOT used in ECS. The CF_explain / CF_explain_multiclass prompts are the MINIMAL
+    # variant and are the canonical CF used for ECS pairs.
     cf_free_path = "prompts/counterfactual_explain_free.txt"
     if dataset_name and Path(f"prompts/counterfactual_explain_free_{dataset_name}.txt").exists():
         cf_free_path = f"prompts/counterfactual_explain_free_{dataset_name}.txt"
@@ -196,8 +188,20 @@ async def process_instance(
     correct = predicted_label == instance.label
     model_refused = is_model_refusal(class_result.raw_response)
     prompt_hash = compute_prompt_hash(class_prompt)
-    prompt_tokens = count_tokens(class_prompt)
-    response_tokens = count_tokens(class_result.raw_response)
+
+    # Real token accounting: accumulate the API's reported usage from EVERY call this
+    # instance makes (classification, explanations, CF re-classification/corrections,
+    # CF-minimal, redaction). count_tokens() string re-tokenization is gone.
+    prompt_tokens = 0
+    response_tokens = 0
+
+    def _acct(usage):
+        nonlocal prompt_tokens, response_tokens
+        if usage is not None:
+            prompt_tokens += usage.prompt_tokens
+            response_tokens += usage.completion_tokens
+
+    _acct(class_result.usage)
     raw_response_length = len(class_result.raw_response)
 
     # D5: include misclassified instances. We only short-circuit when the
@@ -230,7 +234,11 @@ async def process_instance(
         )
         return result
 
-    prompt_tokens += count_tokens(format_explain_prompt(prompts["H_explain"], predicted_label)) * 4
+    # Per-strategy output budget, sourced from config (with a sane floor). The engine
+    # auto-expands on truncation, but a reasonable starting budget avoids needless retries.
+    # Highlighting scores every word, so it gets double the budget.
+    base_max_tokens = max((getattr(config.inference, "max_tokens", 512) or 512), 800)
+    truncated_strategies = []
 
     # Randomize strategy order
     strategy_order = STRATEGY_IDS.copy()
@@ -248,12 +256,12 @@ async def process_instance(
     cf_rules_compliant = False
     cf_flip_verified = False
     cf_actual_label = ""
-    # CF-minimal variant state (D2) — always defined even if the branch never runs.
-    cf_minimal_valid = False
-    cf_minimal_flip_verified = False
-    cf_minimal_minimality = None
-    cf_minimal_tokens = set()
-    cf_minimal_text = ""
+    # CF-free contrast state (D2) — always defined even if the branch never runs.
+    cf_contrast_valid = False
+    cf_contrast_flip_verified = False
+    cf_contrast_minimality = None
+    cf_contrast_tokens = set()
+    cf_contrast_text = ""
 
     for strat_id in STRATEGY_IDS:
         raw_responses[strat_id] = ""
@@ -264,17 +272,18 @@ async def process_instance(
 
     for strat_id in strategy_order:
         if strat_id == "CF":
-            # Canonical CF for ECS is the UNCONSTRAINED (free) variant — it flips
-            # reliably (Mayne et al. 2025). The minimal variant is elicited separately below.
-            cf_prompt_key = "CF_explain_free" if "CF_explain_free" in prompts else "CF_explain"
-            if len(label_set) > 2:
-                if "CF_explain_free_multiclass" in prompts:
-                    cf_prompt_key = "CF_explain_free_multiclass"
-                elif "CF_explain_multiclass" in prompts:
-                    cf_prompt_key = "CF_explain_multiclass"
-            other_labels = ", ".join(l for l in label_set if l != predicted_label)
+            # Canonical CF for ECS is the MINIMAL contrastive edit (MiCE; Ross et al.
+            # 2021): the smallest flip-inducing change is the informative attribution.
+            # The unconstrained "free" variant is elicited separately below as a
+            # validity-minimality contrast (Mayne et al. 2025).
+            cf_prompt_key = "CF_explain"
+            if len(label_set) > 2 and "CF_explain_multiclass" in prompts:
+                cf_prompt_key = "CF_explain_multiclass"
+            _cf_targets = [l for l in label_set if l != predicted_label]
+            other_labels = ", ".join(_cf_targets)
             explain_prompt = format_explain_prompt(prompts[cf_prompt_key], predicted_label,
-                                                   input_text=clean_text, other_labels=other_labels)
+                                                   input_text=clean_text, other_labels=other_labels,
+                                                   other_labels_quoted=quote_labels(_cf_targets))
         else:
             explain_prompt = format_explain_prompt(prompts[f"{strat_id}_explain"], predicted_label,
                                                    input_text=clean_text)
@@ -285,15 +294,18 @@ async def process_instance(
             {"role": "user", "content": explain_prompt},
         ]
         try:
-            strat_max_tokens = 1500 if strat_id == "H" else 500
-            raw = await engine.chat(messages, max_tokens=strat_max_tokens)
+            strat_max_tokens = base_max_tokens * 2 if strat_id == "H" else base_max_tokens
+            raw, usage = await engine.chat_with_usage(messages, max_tokens=strat_max_tokens)
+            _acct(usage)
             raw_responses[strat_id] = raw or ""
-            response_tokens += count_tokens(raw) if raw else 0
+            if usage.truncated:
+                truncated_strategies.append(strat_id)
+                logger.warning(f"{instance_id} strategy {strat_id}: response truncated at token limit even after retry")
             if raw is None or not raw.strip():
                 logger.warning(f"Empty response from model for {instance_id} strategy {strat_id}, retrying with max_tokens=2500...")
-                raw = await engine.chat(messages, max_tokens=2500)
+                raw, usage = await engine.chat_with_usage(messages, max_tokens=2500)
+                _acct(usage)
                 raw_responses[strat_id] = raw or ""
-                response_tokens += count_tokens(raw) if raw else 0
                 if raw is None or not raw.strip():
                     logger.warning(f"Empty response on retry for {instance_id} strategy {strat_id}")
             if raw and is_model_refusal(raw):
@@ -340,12 +352,12 @@ async def process_instance(
                     raise ParsingError("CF JSON not parseable")
                 # Stage 2: Rules compliance (formerly parse_counterfactual)
                 try:
-                    # Free/canonical CF is unconstrained — skip the edit-ratio cap.
-                    # (skip_validation only bypasses the ratio check; a real flip and
-                    # non-empty change are still required.)
+                    # Canonical CF is the MINIMAL edit — enforce the MiCE-style edit-ratio
+                    # cap so non-minimal rewrites are rejected (a real flip and a non-empty
+                    # change are also required).
                     cf_text_used, new_pred, from_tokens = parser.parse_counterfactual(
                         raw, clean_text, predicted_label, label_set, normalizer,
-                        max_edit_ratio=cf_max_ratio, skip_validation=True
+                        max_edit_ratio=cf_max_ratio, skip_validation=False
                     )
                     cf_rules_compliant = bool(from_tokens)
                 except ParsingError:
@@ -362,6 +374,7 @@ async def process_instance(
                         cf_class_prompt = format_prompt(prompts["classification"], cf_text_used, label_set)
                         validate_prompt(cf_class_prompt, label_set, context=f"CF re-classification for {instance_id}")
                         cf_class_result = await engine.classify(cf_class_prompt)
+                        _acct(cf_class_result.usage)
                         cf_actual_label = parser.parse_classification(cf_class_result.raw_response, label_set)
                         cf_flip_verified = (cf_actual_label != predicted_label)
                         if cf_flip_verified:
@@ -383,7 +396,8 @@ async def process_instance(
                                 {"role": "assistant", "content": cf_raw_used},
                                 {"role": "user", "content": correction_prompt},
                             ]
-                            correction_raw = await engine.chat(correction_messages, max_tokens=500)
+                            correction_raw, _cf_corr_usage = await engine.chat_with_usage(correction_messages, max_tokens=base_max_tokens)
+                            _acct(_cf_corr_usage)
                             cf_raw_used = correction_raw
                             cf_json_obj2 = parser._extract_json(correction_raw)
                             if cf_json_obj2 is None:
@@ -391,7 +405,7 @@ async def process_instance(
                                 raise ParsingError("CF correction JSON not parseable")
                             cf_text_used, new_pred, from_tokens = parser.parse_counterfactual(
                                 correction_raw, clean_text, predicted_label, label_set, normalizer,
-                                max_edit_ratio=cf_max_ratio, skip_validation=True
+                                max_edit_ratio=cf_max_ratio, skip_validation=False
                             )
                             cf_rules_compliant = bool(from_tokens)
                         else:
@@ -405,7 +419,7 @@ async def process_instance(
                         raise
                 parsed_tokens[strat_id] = from_tokens
                 parsed_tokens["CF_reconstructed"] = cf_text_used
-                parsed_tokens["CF_free_minimality"] = len(from_tokens) / max(len(clean_text.split()), 1)
+                parsed_tokens["CF_canonical_minimality"] = len(from_tokens) / max(len(clean_text.split()), 1)
                 parsed_flags[strat_id] = True
                 valid_flags[strat_id] = True
             elif strat_id == "RO":
@@ -429,7 +443,8 @@ async def process_instance(
                             {"role": "assistant", "content": raw},
                             {"role": "user", "content": correction_prompt},
                         ]
-                        correction_raw = await engine.chat(correction_messages, max_tokens=500)
+                        correction_raw, _ro_corr_usage = await engine.chat_with_usage(correction_messages, max_tokens=base_max_tokens)
+                        _acct(_ro_corr_usage)
                         ranked = parser.parse_rank_ordering(correction_raw, clean_text, normalizer)
                         ro_tokens = [t for t, r in ranked]
                         if len(ro_tokens) >= 3:
@@ -438,7 +453,11 @@ async def process_instance(
                             logger.warning(f"RO self-correction for {instance_id}: still insufficient valid tokens")
                     except Exception as e:
                         logger.warning(f"RO self-correction for {instance_id} failed: {e}")
-                normalized_set = normalizer.normalize_tokens(ro_tokens)
+                # Use the same length-proportional top-k as Highlighting for the
+                # set-overlap comparison (H and RO are the same extraction paradigm);
+                # the full ranked list is retained below for Kendall τ / RBO.
+                k_ro = dynamic_k(clean_text, cap=len(ro_tokens))
+                normalized_set = normalizer.normalize_tokens(ro_tokens[:k_ro])
                 if not normalized_set:
                     raise ParsingError("RO evidence set is empty after normalization")
                 normalized_ranked = []
@@ -535,45 +554,47 @@ async def process_instance(
             ecs_random = sum(_rand_vals) / len(_rand_vals)
             ecs_lift = ecs_value - ecs_random
 
-    # D2: CF-minimal variant — the Mayne et al. validity-minimality probe. Elicited
-    # separately, NOT used in ECS. Substitution-only; a length change => invalid.
+    # D2: CF-free (unconstrained) variant — the validity-minimality CONTRAST to the
+    # canonical minimal CF (Mayne et al. 2025). Elicited separately, NOT used in ECS;
+    # it reliably flips but is far from minimal, which is exactly the contrast we report.
     if predicted_label:
-        cf_min_key = "CF_explain"
-        if len(label_set) > 2 and "CF_explain_multiclass" in prompts:
-            cf_min_key = "CF_explain_multiclass"
-        if cf_min_key in prompts:
+        cf_free_key = "CF_explain_free" if "CF_explain_free" in prompts else None
+        if len(label_set) > 2 and "CF_explain_free_multiclass" in prompts:
+            cf_free_key = "CF_explain_free_multiclass"
+        if cf_free_key and cf_free_key in prompts:
             try:
-                _other = ", ".join(l for l in label_set if l != predicted_label)
-                cf_min_prompt = format_explain_prompt(prompts[cf_min_key], predicted_label,
-                                                      input_text=clean_text, other_labels=_other)
-                cf_min_messages = [
+                _free_targets = [l for l in label_set if l != predicted_label]
+                _other = ", ".join(_free_targets)
+                cf_free_prompt = format_explain_prompt(prompts[cf_free_key], predicted_label,
+                                                       input_text=clean_text, other_labels=_other,
+                                                       other_labels_quoted=quote_labels(_free_targets))
+                cf_free_messages = [
                     {"role": "user", "content": class_prompt},
                     {"role": "assistant", "content": class_result.raw_response},
-                    {"role": "user", "content": cf_min_prompt},
+                    {"role": "user", "content": cf_free_prompt},
                 ]
-                cf_min_raw = await engine.chat(cf_min_messages, max_tokens=500)
-                cf_max_ratio_m = getattr(dataset_config, 'cf_max_edit_ratio', 0.3)
-                cf_min_text, _cf_min_pred, cf_min_from = parser.parse_counterfactual(
-                    cf_min_raw, clean_text, predicted_label, label_set, normalizer,
-                    max_edit_ratio=cf_max_ratio_m,
+                cf_free_raw, _cf_free_usage = await engine.chat_with_usage(cf_free_messages, max_tokens=base_max_tokens)
+                _acct(_cf_free_usage)
+                # Unconstrained: no edit-ratio cap (skip_validation=True); a real flip and
+                # a non-empty change are still required.
+                cf_free_text, _cf_free_pred, cf_free_from = parser.parse_counterfactual(
+                    cf_free_raw, clean_text, predicted_label, label_set, normalizer,
+                    skip_validation=True,
                 )
-                if len(cf_min_text.split()) != len(clean_text.split()):
-                    logger.info(f"CF-minimal for {instance_id}: length changed — invalid (not substitution-only)")
-                    cf_minimal_text = cf_min_text
-                    cf_minimal_minimality = len(cf_min_from) / max(len(clean_text.split()), 1)
-                else:
-                    cf_minimal_text = cf_min_text
-                    cf_minimal_tokens = cf_min_from
-                    cf_minimal_minimality = len(cf_min_from) / max(len(clean_text.split()), 1)
-                    cf_min_class_prompt = format_prompt(prompts["classification"], cf_min_text, label_set)
-                    cf_min_class_raw = (await engine.classify(cf_min_class_prompt)).raw_response
-                    cf_min_actual = parser.parse_classification(cf_min_class_raw, label_set)
-                    cf_minimal_flip_verified = (cf_min_actual != predicted_label)
-                    cf_minimal_valid = cf_minimal_flip_verified
+                cf_contrast_text = cf_free_text
+                cf_contrast_minimality = len(cf_free_from) / max(len(clean_text.split()), 1)
+                cf_free_class_prompt = format_prompt(prompts["classification"], cf_free_text, label_set)
+                cf_free_class_result = await engine.classify(cf_free_class_prompt)
+                _acct(cf_free_class_result.usage)
+                cf_free_actual = parser.parse_classification(cf_free_class_result.raw_response, label_set)
+                cf_contrast_flip_verified = (cf_free_actual != predicted_label)
+                cf_contrast_valid = cf_contrast_flip_verified
+                if cf_contrast_valid:
+                    cf_contrast_tokens = cf_free_from
             except (ParsingError, json.JSONDecodeError) as e:
-                logger.info(f"CF-minimal for {instance_id}: invalid ({e})")
+                logger.info(f"CF-free contrast for {instance_id}: invalid ({e})")
             except APIError as e:
-                logger.warning(f"CF-minimal for {instance_id}: API error ({e})")
+                logger.warning(f"CF-free contrast for {instance_id}: API error ({e})")
 
     result = InstanceResult(
         instance_id=instance_id,
@@ -644,12 +665,12 @@ async def process_instance(
         cf_counterfactual_text=cf_counterfactual_text,
         ecs_random=ecs_random,
         ecs_lift=ecs_lift,
-        cf_free_minimality=parsed_tokens.get("CF_free_minimality"),
-        cf_minimal_valid=cf_minimal_valid,
-        cf_minimal_flip_verified=cf_minimal_flip_verified,
-        cf_minimal_minimality=cf_minimal_minimality,
-        cf_minimal_tokens=cf_minimal_tokens,
-        cf_minimal_text=cf_minimal_text,
+        cf_canonical_minimality=parsed_tokens.get("CF_canonical_minimality"),
+        cf_contrast_valid=cf_contrast_valid,
+        cf_contrast_flip_verified=cf_contrast_flip_verified,
+        cf_contrast_minimality=cf_contrast_minimality,
+        cf_contrast_tokens=cf_contrast_tokens,
+        cf_contrast_text=cf_contrast_text,
         r_introduced_concept_rate=r_introduced_concept_rate,
     )
 
@@ -676,6 +697,7 @@ async def process_instance(
         async def redact_classify(redacted_text: str) -> str:
             cfp = format_prompt(prompts["classification"], redacted_text, label_set)
             cr = await engine.classify(cfp)
+            _acct(cr.usage)
             return parser.parse_classification(cr.raw_response, label_set)
 
         rt = RedactionTest(redact_classify)
@@ -689,6 +711,12 @@ async def process_instance(
                 result.redaction_RO = await rt.run(ro_ranked_tokens, clean_text, predicted_label)
             except Exception as e:
                 logger.warning(f"Redaction test RO failed for {instance_id}: {e}")
+
+    # Re-sync token totals: redaction and CF-minimal calls were accounted into the
+    # local accumulator AFTER the result object was constructed, so refresh the fields.
+    result.prompt_tokens = prompt_tokens
+    result.response_tokens = response_tokens
+    result.truncated_strategies = list(truncated_strategies)
 
     return result
 
@@ -764,13 +792,13 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
     ecs_lift_values = [r.ecs_lift for r in results if r.ecs_lift is not None]
     ecs_random_values = [r.ecs_random for r in results if r.ecs_random is not None]
     icr_values = [r.r_introduced_concept_rate for r in results if r.r_introduced_concept_rate is not None]
-    cf_free_min_values = [r.cf_free_minimality for r in results if r.cf_free_minimality is not None]
-    cf_minimal_min_values = [r.cf_minimal_minimality for r in results if r.cf_minimal_minimality is not None]
+    cf_canonical_min_values = [r.cf_canonical_minimality for r in results if r.cf_canonical_minimality is not None]
+    cf_contrast_min_values = [r.cf_contrast_minimality for r in results if r.cf_contrast_minimality is not None]
     ecs_correct_vals = [r.ecs for r in results if r.ecs is not None and r.correct]
     ecs_incorrect_vals = [r.ecs for r in results if r.ecs is not None and not r.correct]
     n_results_safe = max(len(results), 1)
-    cf_free_validity_rate = sum(1 for r in results if r.counterfactual_valid) / n_results_safe
-    cf_minimal_validity_rate = sum(1 for r in results if r.cf_minimal_valid) / n_results_safe
+    cf_canonical_validity_rate = sum(1 for r in results if r.counterfactual_valid) / n_results_safe
+    cf_contrast_validity_rate = sum(1 for r in results if r.cf_contrast_valid) / n_results_safe
 
     return AggregateMetrics(
         aggregation_level=level,
@@ -834,10 +862,10 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
         mean_ecs_lift=safe_mean(ecs_lift_values),
         mean_ecs_random=safe_mean(ecs_random_values),
         introduced_concept_rate=safe_mean(icr_values),
-        cf_free_validity_rate=cf_free_validity_rate,
-        cf_minimal_validity_rate=cf_minimal_validity_rate,
-        mean_cf_free_minimality=safe_mean(cf_free_min_values),
-        mean_cf_minimal_minimality=safe_mean(cf_minimal_min_values),
+        cf_canonical_validity_rate=cf_canonical_validity_rate,
+        cf_contrast_validity_rate=cf_contrast_validity_rate,
+        mean_cf_canonical_minimality=safe_mean(cf_canonical_min_values),
+        mean_cf_contrast_minimality=safe_mean(cf_contrast_min_values),
         mean_ecs_correct=safe_mean(ecs_correct_vals),
         n_correct=len(ecs_correct_vals),
         mean_ecs_incorrect=safe_mean(ecs_incorrect_vals),
@@ -879,27 +907,45 @@ async def run_experiment(config, args):
     all_results: List[InstanceResult] = []
     aggregate_list: List[AggregateMetrics] = []
     sampling_logs: List[SamplingLog] = []
+    # Set once a per-day quota is hit so we stop the run (every remaining call would
+    # hit the same wall) instead of futilely retrying through the rest of the matrix.
+    daily_limit_hit = False
 
     for dataset_config in config.datasets:
         dataset_name = dataset_config.name
         logger.info(f"Processing dataset: {dataset_name}")
 
         try:
-            dataset = loader.load_dataset(
-                dataset_config.huggingface_id,
-                dataset_config.split
-            )
-            instances = loader.sample_balanced(
-                dataset=dataset,
-                n_samples=dataset_config.sample_size,
-                label_field=getattr(dataset_config, 'label_field', 'label'),
-                text_field=getattr(dataset_config, 'text_field', 'text'),
-                secondary_text_field=getattr(dataset_config, 'secondary_text_field', None),
-                dataset_name=dataset_name,
-                split=dataset_config.split,
-                label_names=dataset_config.labels if hasattr(dataset_config, 'labels') else None,
-            )
-            logger.info(f"Loaded {len(instances)} instances for {dataset_name}")
+            # Prefer a frozen curated set (data/processed/{dataset}_curated.jsonl,
+            # produced by scripts/curate_dataset.py) so every run analyses the same
+            # quality-controlled instances. Fall back to live balanced sampling.
+            curated_path = Path("data/processed") / f"{dataset_name}_curated.jsonl"
+            if curated_path.exists():
+                instances = loader.load_curated(str(curated_path))
+                logger.info(f"Loaded {len(instances)} CURATED instances for {dataset_name} "
+                            f"from {curated_path}")
+                # Respect sample_size for pilots/subsets; shuffle reproducibly before slicing.
+                if dataset_config.sample_size < len(instances):
+                    rng_slice = random.Random(config.experiment.seed)
+                    rng_slice.shuffle(instances)
+                    instances = instances[:dataset_config.sample_size]
+                    logger.info(f"Sliced to {len(instances)} instances (sample_size={dataset_config.sample_size})")
+            else:
+                dataset = loader.load_dataset(
+                    dataset_config.huggingface_id,
+                    dataset_config.split
+                )
+                instances = loader.sample_balanced(
+                    dataset=dataset,
+                    n_samples=dataset_config.sample_size,
+                    label_field=getattr(dataset_config, 'label_field', 'label'),
+                    text_field=getattr(dataset_config, 'text_field', 'text'),
+                    secondary_text_field=getattr(dataset_config, 'secondary_text_field', None),
+                    dataset_name=dataset_name,
+                    split=dataset_config.split,
+                    label_names=dataset_config.labels if hasattr(dataset_config, 'labels') else None,
+                )
+                logger.info(f"Loaded {len(instances)} sampled instances for {dataset_name}")
         except Exception as e:
             logger.error(f"Failed to load dataset {dataset_name}: {e}")
             continue
@@ -920,6 +966,7 @@ async def run_experiment(config, args):
                 model_name=model_config.model_id,
                 max_retries=config.inference.max_retries,
                 concurrent_requests=config.inference.concurrent_requests,
+                context_window=getattr(model_config, "context_window", 8192),
             )
 
             prompts = create_prompt_map(config, dataset_name=dataset_name)
@@ -945,6 +992,17 @@ async def run_experiment(config, args):
                     summary.successful_instances += 1
                     if not result.correct:
                         wrong_pred_count += 1
+                except DailyRateLimitExhausted as e:
+                    logger.error(f"Daily rate limit reached at {instance.instance_id}: {e}")
+                    summary.failed_instances += 1
+                    _flush_checkpoint()
+                    logger.warning(
+                        f"Stopping run: the daily Groq quota is exhausted, so the remaining "
+                        f"instances and models cannot be processed today. Partial output saved "
+                        f"({last_checkpointed} instances)."
+                    )
+                    daily_limit_hit = True
+                    break
                 except RateLimitExhausted as e:
                     logger.error(f"Rate limit exhausted for {instance.instance_id}: {e}")
                     summary.failed_instances += 1
@@ -967,10 +1025,28 @@ async def run_experiment(config, args):
             slog.wrong_predictions += wrong_pred_count
             all_results.extend(model_results)
 
+            # Cross-check: the engine's authoritative cumulative usage vs. the sum
+            # attributed to per-instance records. A divergence flags an uncounted call path.
+            engine_total = engine.total_prompt_tokens + engine.total_completion_tokens
+            instance_total = sum(r.prompt_tokens + r.response_tokens for r in model_results)
+            logger.info(f"Token usage for {model_config.name}/{dataset_name}: "
+                        f"engine={engine_total} (prompt={engine.total_prompt_tokens}, "
+                        f"completion={engine.total_completion_tokens}), per-instance sum={instance_total}, "
+                        f"truncated_calls={engine.n_truncated}")
+            if engine_total and abs(engine_total - instance_total) > 0.05 * engine_total:
+                logger.warning(f"Token attribution mismatch for {model_config.name}/{dataset_name}: "
+                               f"engine={engine_total} vs per-instance={instance_total} — an API call path may be unaccounted.")
+
             agg = compute_aggregate_metrics(model_results, "model_dataset", f"{model_config.name}_{dataset_name}", sampling_log=slog)
             aggregate_list.append(agg)
 
+            if daily_limit_hit:
+                break  # stop remaining models — the daily quota is gone
+
         sampling_logs.append(slog)
+
+        if daily_limit_hit:
+            break  # stop remaining datasets — the daily quota is gone
 
     # Compute overall aggregate
     if all_results:

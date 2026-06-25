@@ -132,3 +132,27 @@ class TestNormalizer:
     def test_cf_anchor_substring_no_false_match(self, normalizer):
         """'or' should NOT match 'world' or 'for' (word-boundary)."""
         assert not normalizer.is_anchored("or", "world for thought")
+
+    def test_anchor_inflection_lemma_match(self, normalizer):
+        """A lemmatized token must anchor to its inflected input surface form."""
+        text = "moved to tears by a couple of scenes in the film"
+        assert normalizer.is_anchored("scene", text)   # scene -> scenes
+        assert normalizer.is_anchored("move", text)     # move  -> moved
+        assert normalizer.is_anchored("tear", text)     # tear  -> tears
+
+    def test_anchor_inflection_independent_of_use_lemmatization(self):
+        """Anchoring stays inflection-robust even when evidence lemmatization is OFF."""
+        n = Normalizer(use_lemmatization=False, remove_stopwords=True)
+        text = "by a couple of scenes"
+        assert n.is_anchored("scene", text)
+        assert not n.is_anchored("banana", text)
+
+    def test_anchor_adjective_inflection(self, normalizer):
+        """Adjective comparative/superlative inflections anchor (multi-POS lemmas)."""
+        assert normalizer.is_anchored("happy", "a happier ending")
+        assert normalizer.is_anchored("big", "the biggest win")
+
+    def test_anchor_does_not_match_synonyms(self, normalizer):
+        """Only morphological variants anchor — true synonyms must NOT (would inflate agreement)."""
+        assert not normalizer.is_anchored("excellent", "a good film")
+        assert not normalizer.is_anchored("happy", "a sad ending")

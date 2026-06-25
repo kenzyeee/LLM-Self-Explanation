@@ -1,9 +1,8 @@
 The text was classified as: {predicted_label}
 
-Here is the exact text that was classified:
-"{input_text}"
+Text: "{input_text}"
 
-Rank the 3-5 most important individual tokens for this classification, from most important to least important. Each item must be a token copied verbatim from the original text — no phrases, no multi-word expressions. Hyphenated compounds (like "hack-artist") are allowed as single tokens. Use fewer than 5 only if there genuinely aren't 5 informative tokens.
+Identify the 3-5 most important words for this classification, ranked from most to least important. Each item must be a single word copied from the text.
 
 Return only valid JSON:
-{{"ranking":["token1","token2","token3","token4","token5"]}}
+{{"ranking": ["word1", "word2", "word3"]}}

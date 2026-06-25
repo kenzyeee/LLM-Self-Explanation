@@ -16,6 +16,22 @@ def load_dataset(huggingface_id: str, split: str = "train", cache_dir: str = Non
     return hf_load_dataset(huggingface_id, split=split, cache_dir=cache_dir)
 
 
+def clean_text(text: str) -> str:
+    """Strip HTML entities and markup from raw dataset text.
+
+    Single source of truth shared by ``sample_balanced`` and the curation
+    pipeline (``src/load/curator.py``). Mirrors ``pre_clean_text`` in
+    ``scripts/run_experiment.py``: unescape entities, drop tags, recover orphaned
+    numeric entities that lost their ``&`` prefix, then remove any leftover named
+    entities. AG News in particular is riddled with these artifacts.
+    """
+    text = html.unescape(text)
+    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r'#(\d+);', lambda m: chr(int(m.group(1))), text)
+    text = re.sub(r'&[a-zA-Z]+;', '', text)
+    return text
+
+
 @dataclass
 class Instance:
     instance_id: str = ""
@@ -79,16 +95,9 @@ class DatasetLoader:
                 label = raw_label
             if label not in labels_to_instances:
                 labels_to_instances[label] = []
-            text = str(item[text_field])
-            text = html.unescape(text)
-            # Catch orphaned numeric entities that lost their & prefix
-            text = re.sub(r'#(\d+);', lambda m: chr(int(m.group(1))), text)
-            text = re.sub(r'<[^>]+>', '', text)
+            text = clean_text(str(item[text_field]))
             if secondary_text_field and secondary_text_field in item and item[secondary_text_field]:
-                secondary = str(item[secondary_text_field])
-                secondary = html.unescape(secondary)
-                secondary = re.sub(r'#(\d+);', lambda m: chr(int(m.group(1))), secondary)
-                secondary = re.sub(r'<[^>]+>', '', secondary)
+                secondary = clean_text(str(item[secondary_text_field]))
                 text = f"Premise: {text}\nHypothesis: {secondary}"
             labels_to_instances[label].append(
                 Instance(text=text, label=label, dataset=dataset_name, split=split)
@@ -126,6 +135,37 @@ class DatasetLoader:
             for inst in instances:
                 f.write(json.dumps(inst.to_dict()) + '\n')
         logger.info(f"Exported {len(instances)} instances to {filepath}")
+
+    def load_curated(self, filepath: str) -> List[Instance]:
+        """Load a frozen curated dataset (produced by src/load/curator.py).
+
+        Each line is an Instance dict plus curation metadata (predicted_label,
+        correct, length_bucket, genre); the extra keys are stashed in
+        ``Instance.metadata`` so downstream code that only reads the core fields
+        is unaffected.
+        """
+        import json
+        path = Path(filepath)
+        if not path.exists():
+            raise DataLoadError(f"Curated dataset not found: {filepath}", error_code="DLE007")
+        core = {'instance_id', 'text', 'label', 'dataset', 'split'}
+        instances: List[Instance] = []
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                d = json.loads(line)
+                meta = {k: v for k, v in d.items() if k not in core}
+                instances.append(Instance(
+                    instance_id=d.get('instance_id', ''),
+                    text=d.get('text', ''),
+                    label=d.get('label', ''),
+                    dataset=d.get('dataset', ''),
+                    split=d.get('split', ''),
+                    metadata=meta,
+                ))
+        logger.info(f"Loaded {len(instances)} curated instances from {filepath}")
+        return instances
 
     def compute_statistics(self, instances: List[Instance]) -> DatasetStats:
         if not instances:

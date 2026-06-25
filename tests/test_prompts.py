@@ -11,8 +11,11 @@ def format_prompt(template: str, input_text: str, label_set) -> str:
     return template.format(input_text=input_text, label_set=", ".join(label_set))
 
 
-def format_explain_prompt(template: str, predicted_label: str, input_text: str = "Some sample text", other_labels: str = "World, Sports, Business") -> str:
-    return template.format(predicted_label=predicted_label, input_text=input_text, other_labels=other_labels)
+def format_explain_prompt(template: str, predicted_label: str, input_text: str = "Some sample text",
+                          other_labels: str = "World, Sports, Business",
+                          other_labels_quoted: str = '"World" or "Sports" or "Business"') -> str:
+    return template.format(predicted_label=predicted_label, input_text=input_text,
+                           other_labels=other_labels, other_labels_quoted=other_labels_quoted)
 
 
 def test_classification_prompt_no_unrendered_placeholders():

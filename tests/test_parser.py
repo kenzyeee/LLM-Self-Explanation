@@ -1,6 +1,8 @@
+import json
 import pytest
 from src.parsing.parser import Parser
 from src.normalization.normalizer import Normalizer
+from src.utils.exceptions import ParsingError
 
 
 @pytest.fixture
@@ -52,14 +54,32 @@ class TestParseHighlighting:
         assert len(tokens) == 3
         assert "great" in tokens
 
-    def test_salience_returns_top5_by_score(self, parser, normalizer):
-        input_text = "one two three four five six seven eight nine ten"
+    def test_salience_dynamic_k_scales_with_length(self, parser, normalizer):
+        # Dynamic k = max(3, round(L/5)). 10 content words -> k=2 -> floored to 3.
+        short_input = "one two three four five six seven eight nine ten"
         tokens = parser.parse_highlighting(
             '{"salience":{"one":1,"two":2,"three":3,"four":4,"five":5,"six":6,"seven":7,"eight":8,"nine":9,"ten":10}}',
-            input_text, normalizer
+            short_input, normalizer
         )
-        assert len(tokens) == 5
-        assert tokens == ["ten", "nine", "eight", "seven", "six"]
+        assert tokens == ["ten", "nine", "eight"]
+
+        # 25 content words -> round(25/5)=5.
+        words = [f"w{i}" for i in range(25)]
+        long_input = " ".join(words)
+        salience = {w: i + 1 for i, w in enumerate(words)}
+        tokens_long = parser.parse_highlighting(
+            json.dumps({"salience": salience}), long_input, normalizer
+        )
+        assert len(tokens_long) == 5
+        assert tokens_long[0] == "w24"
+
+    def test_salience_dynamic_k_capped_by_valid_count(self, parser, normalizer):
+        # Long input but only 3 valid scored tokens -> k cannot exceed 3.
+        long_input = " ".join(f"w{i}" for i in range(40)) + " great wonderful amazing"
+        tokens = parser.parse_highlighting(
+            '{"salience":{"great":10,"wonderful":8,"amazing":5}}', long_input, normalizer
+        )
+        assert len(tokens) == 3
 
     def test_salience_unanchored_discarded(self, parser, normalizer):
         result = parser.parse_highlighting(
@@ -106,6 +126,19 @@ class TestParseRationale:
                 "Great movie", normalizer
             )
 
+    def test_content_words_kept_function_words_dropped(self, parser, normalizer):
+        """Open-class POS extraction keeps content-word lemmas and drops function words."""
+        input_text = "The brilliant director crafted a stunning film."
+        _, evidence = parser.parse_rationale(
+            '{"rationale":"The brilliant director crafted a stunning film."}',
+            input_text, normalizer
+        )
+        # Content words (lemmas) present; function words absent.
+        assert "director" in evidence
+        assert "film" in evidence
+        for fn in ("the", "a", "and", "was"):
+            assert fn not in evidence
+
     def test_introduced_concepts_tracked(self, parser, normalizer):
         """Rationale concepts absent from the input are surfaced as introduced
         concepts (post-hoc rationalization signal), not silently dropped."""
@@ -135,6 +168,16 @@ class TestParseCounterfactual:
         assert cf_text == "This movie was terrible."
         assert new_pred == "negative"
         assert "great" in from_tokens
+
+    def test_insertion_only_flip_has_no_original_attribution(self, parser, normalizer):
+        # Flipping by inserting "not" changes the text but replaces/deletes no original
+        # token, so there is no original-token attribution -> raises (not "identical").
+        with pytest.raises(ParsingError, match="insertion"):
+            parser.parse_counterfactual(
+                '{"rewritten":"This movie was not great.","new_prediction":"negative"}',
+                "This movie was great.", "positive", ["positive", "negative"], normalizer,
+                skip_validation=True
+            )
 
     def test_no_flip_raises(self, parser, normalizer):
         with pytest.raises(Exception):
@@ -217,6 +260,11 @@ class TestWordEditRatio:
     def test_one_empty(self, parser):
         assert parser._word_edit_ratio("hello", "") == 1.0
 
+    def test_normalized_by_original_length(self, parser):
+        # MiCE: distance / len(original), not / max(n, m). One insertion into a
+        # 2-word original => 1/2 = 0.5 (would be 1/3 under the old max(n,m) denom).
+        assert parser._word_edit_ratio("hello world", "hello big world") == 0.5
+
 
 class TestExtractJson:
     def test_direct_json(self, parser):
@@ -232,3 +280,55 @@ class TestExtractJson:
 
     def test_invalid_json_returns_none(self, parser):
         assert parser._extract_json("not json") is None
+
+    def test_repairs_unescaped_inner_quotes(self, parser):
+        # Real failure mode: a rationale value that quotes a phrase from the text,
+        # leaving unescaped double quotes that break strict json.loads.
+        raw = ('{"rationale":"The film as being "as seductive as it is haunting" '
+               'implies a captivating quality."}')
+        obj = parser._extract_json(raw)
+        assert obj is not None
+        assert obj["rationale"].startswith("The film as being")
+        assert "seductive" in obj["rationale"]
+
+    def test_repair_preserves_legit_inner_quotes_in_rewrite(self, parser):
+        raw = '{"rewritten":"he said "hello" loudly","new_prediction":"negative"}'
+        obj = parser._extract_json(raw)
+        assert obj == {"rewritten": 'he said "hello" loudly', "new_prediction": "negative"}
+
+    def test_repair_does_not_corrupt_valid_json(self, parser):
+        assert parser._extract_json('{"salience":{"a":2,"film":6}}') == {"salience": {"a": 2, "film": 6}}
+
+
+class TestHighlightingSelection:
+    def test_punctuation_only_keys_dropped_silently(self, parser, normalizer):
+        # Model padding such as "(" and "." must never surface as evidence tokens.
+        raw = ('{"salience":{"expect":6,"same-old":8,"lame-old":9,"slasher":7,'
+               '"nonsense":8,"scenery":4,"(":1,".":1}}')
+        text = "expect the same-old , lame-old slasher nonsense , just with different scenery ."
+        result = parser.parse_highlighting(raw, text, normalizer)
+        assert "(" not in result and "." not in result
+        assert "lame-old" in result
+
+    def test_topk_selects_content_words_not_stopwords(self, parser, normalizer):
+        # Top-scored stopwords ("very","too") must not crowd out content words and
+        # then vanish in normalization, leaving an erratically tiny H set.
+        raw = ('{"salience":{"a":2,"very":8,"long":9,"movie":6,"dull":10,"too":9,'
+               '"much":8,"stretches":8,"entirely":8,"focus":5}}')
+        text = "a very long movie , dull in stretches , with entirely too much focus ."
+        result = parser.parse_highlighting(raw, text, normalizer)
+        norm = normalizer.normalize_tokens(result)
+        assert "very" not in norm and "too" not in norm
+        assert len(norm) >= 3  # content words survive instead of collapsing to 2
+
+
+class TestRationaleInflectionAnchoring:
+    def test_inflected_rationale_token_anchors(self, parser, normalizer):
+        # Rationale lemma "scene" must anchor to input surface "scenes" (was dropped
+        # as "unanchored", emptying the whole rationale evidence set).
+        raw = ('{"rationale":"The scenes are emotionally powerful and the work has a '
+               'profound impact on the viewer."}')
+        text = "moved to tears by a couple of scenes , you have ice water in your veins"
+        _, evidence = parser.parse_rationale(raw, text, normalizer)
+        norm = normalizer.normalize_tokens(evidence)
+        assert "scene" in norm

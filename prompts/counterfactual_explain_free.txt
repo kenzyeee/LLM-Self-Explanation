@@ -1,15 +1,8 @@
 The text was classified as: {predicted_label}
 
-Here is the exact text that was classified:
-"{input_text}"
+Text: "{input_text}"
 
-Rewrite the text so a classifier would instead predict one of: {other_labels}.
-Change only what is necessary to flip the label — you may change as many or as few
-words as needed, but keep the rest of the text intact and fluent. Do not add meta
-commentary; return only the rewritten text in the JSON.
+Edit the text so that it is classified as {other_labels_quoted} instead. You may change as many or as few words as needed; keep the result fluent and return only the edited text.
 
 Return only valid JSON:
-{{"rewritten": "<rewritten text>", "new_prediction": "<one of: {other_labels}>"}}
-
-If no change could plausibly flip the label, return:
-{{"rewritten": null, "new_prediction": null}}
+{{"rewritten": "<edited text>", "new_prediction": "<one of: {other_labels}>"}}

@@ -91,12 +91,49 @@ class Normalizer:
                 logger.warning("WordNet data unavailable; proceeding without lemmatization.")
                 self._lemmatizer = None
 
+        # Anchoring lemmatizer — ALWAYS available, independent of `use_lemmatization`.
+        # is_anchored() must match an explanation token to its input occurrence even
+        # across inflection (e.g. rationale lemma "scene" vs input surface "scenes",
+        # "moved" vs "move"). Evidence-set normalization may run unlemmatized, but
+        # anchoring should never be defeated by a plural/tense difference, so this
+        # lemmatizer is constructed separately and used only for the anchor fallback.
+        self._anchor_lemmatizer = self._lemmatizer
+        if self._anchor_lemmatizer is None:
+            try:
+                from nltk.stem import WordNetLemmatizer
+                self._anchor_lemmatizer = WordNetLemmatizer()
+                self._anchor_lemmatizer.lemmatize("tests")
+            except Exception:
+                self._anchor_lemmatizer = None
+        self._input_lemma_cache: dict = {}
+
     def pre_normalize(self, token: str) -> str:
         """Light normalization for input-anchored matching (no lemmatization)."""
         t = token.strip().strip('\'"*')
         t = t.lower()
         t = t.strip(string.punctuation)
         return t
+
+    def _lemmatize_to_fixed_point(self, token: str) -> str:
+        """Apply verb-then-noun WordNet lemmatization repeatedly until it stabilizes.
+
+        A single verb-then-noun pass is not idempotent: e.g. 'canings' reduces
+        only via the noun step to 'caning', but feeding 'caning' back finds the
+        verb base 'can'. Without iterating, normalize(normalize(x)) can differ
+        from normalize(x). Iterating to a fixed point guarantees the returned
+        lemma is stable under re-lemmatization. The ``seen`` guard bounds the
+        loop so a (theoretical) lemmatization cycle cannot hang.
+        """
+        seen: Set[str] = set()
+        current = token
+        while current not in seen:
+            seen.add(current)
+            nxt = self._lemmatizer.lemmatize(
+                self._lemmatizer.lemmatize(current, 'v'), 'n')
+            if nxt == current:
+                break
+            current = nxt
+        return current
 
     def normalize(self, token: str) -> Optional[str]:
         """Full normalization pipeline for evidence tokens."""
@@ -117,7 +154,7 @@ class Normalizer:
             # No POS context is available for a lone token, so apply verb-then-noun
             # WordNet lemmatization — a deterministic heuristic that collapses the
             # most common inflections (e.g. "running"->"run", "movies"->"movie").
-            t = self._lemmatizer.lemmatize(self._lemmatizer.lemmatize(t, 'v'), 'n')
+            t = self._lemmatize_to_fixed_point(t)
 
         if t in POLARITY_WORDS:
             return t
@@ -146,14 +183,62 @@ class Normalizer:
         t = t.strip()
         return t
 
+    # POS tags lemmatized for anchoring: noun, verb, adjective, adverb, satellite-adj.
+    # Covering all open classes (not just noun+verb) is what lets adjective inflections
+    # — "happier"→"happy", "biggest"→"big", "better"→"good" — anchor correctly.
+    _ANCHOR_POS = ('n', 'v', 'a', 'r', 's')
+
+    def _anchor_lemmas(self, word: str) -> Set[str]:
+        """All candidate WordNet lemmas of a word across open-class POS, for matching.
+
+        Two surface forms are treated as the same evidence iff their lemma sets share
+        a member — a morphological criterion, not a hand-built synonym/word list. The
+        word itself is always included so matching degrades to surface comparison when
+        no lemmatizer is available (independent of `use_lemmatization`).
+        """
+        w = self.pre_normalize(word)
+        if not w:
+            return set()
+        lemmas = {w}
+        lem = self._anchor_lemmatizer
+        if lem is not None:
+            for pos in self._ANCHOR_POS:
+                try:
+                    lemmas.add(lem.lemmatize(w, pos))
+                except Exception:
+                    pass
+        return lemmas
+
+    def _input_anchor_lemmas(self, input_text: str) -> Set[str]:
+        """Union of anchor-lemmas over every input word (cached per input_text)."""
+        cached = self._input_lemma_cache.get(input_text)
+        if cached is not None:
+            return cached
+        norm_input = self.normalize_input_text(input_text)
+        lemmas: Set[str] = set()
+        for w in re.findall(r"[\w'-]+", norm_input):
+            lemmas |= self._anchor_lemmas(w)
+        self._input_lemma_cache[input_text] = lemmas
+        return lemmas
+
     def is_anchored(self, token: str, input_text: str) -> bool:
-        """Check if token appears as a whole word in input_text (word-boundary match)."""
+        """Check if token occurs in input_text, robust to inflection.
+
+        Fast path: whole-word (word-boundary) surface match — exact, no lemmatization.
+        Fallback: the token anchors if its lemma set intersects the input's lemma set,
+        so an inflected explanation token ("scene", "move", "happy") still anchors to a
+        differently-inflected input surface form ("scenes", "moved", "happier"). This
+        is generic morphology (WordNet), not per-word rules. Genuine synonyms that are
+        NOT morphological variants (e.g. "good"/"excellent") are deliberately NOT
+        matched — collapsing those would inflate cross-method agreement.
+        """
         norm_token = self.pre_normalize(token)
         if not norm_token:
             return False
         norm_input = self.normalize_input_text(input_text)
-        pattern = re.compile(r'\b' + re.escape(norm_token) + r'\b')
-        return bool(pattern.search(norm_input))
+        if re.search(r'\b' + re.escape(norm_token) + r'\b', norm_input):
+            return True
+        return bool(self._anchor_lemmas(norm_token) & self._input_anchor_lemmas(input_text))
 
     def _exact_or_fuzzy_match(self, token: str, input_text: str) -> bool:
         if token.lower() in input_text.lower():

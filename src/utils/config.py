@@ -27,6 +27,7 @@ class DatasetConfig:
     cf_max_edit_ratio: float = 0.3
     description: Optional[str] = None
     task_type: Optional[str] = None
+    curation: Optional[Dict[str, Any]] = None
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 

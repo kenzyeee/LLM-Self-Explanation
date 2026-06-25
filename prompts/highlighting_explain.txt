@@ -1,9 +1,8 @@
 The text was classified as: {predicted_label}
 
-Here is the exact text that was classified:
-"{input_text}"
+Text: "{input_text}"
 
-For EACH word in the text above, assign an importance score from 1 (irrelevant) to 10 (critical for this classification). Every word in that text must receive a score — no omissions, no extra words. Scores reflect how strongly each word supports the predicted label.
+Analyze the importance of each word for this classification. Give every word an importance score from 1 (irrelevant) to 10 (decisive), using each word exactly as it appears in the text.
 
-Return only valid JSON. Each key must be a word copied verbatim from the original text, each value an integer 1-10:
-{{"salience":{{"WORD":SCORE, "WORD":SCORE, ...}}}}
+Return only valid JSON:
+{{"salience": {{"word": score, ...}}}}
