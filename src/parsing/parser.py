@@ -102,10 +102,9 @@ class Parser:
              made H sets erratically small — top-scored stopwords ("very", "too") were
              selected and only dropped during later normalization.
           3. Sort by salience (descending) and return the length-proportional top-k
-             (dynamic_k). The full content-word order is stored in
-             self._h_salience_ordered for downstream Kendall τ / RBO comparison with RO.
+             (dynamic_k). The returned ranked top-k list is reused by the caller for the
+             downstream Kendall τ / RBO comparison with RO.
         """
-        self._h_salience_ordered: List[str] = []
         text = raw_response.strip()
         obj = self._extract_json(text)
         if obj is None:
@@ -138,7 +137,6 @@ class Parser:
             raise ParsingError(f"Only {len(scored)} valid content salience entries (need >=2)")
         # Sort descending by score, then return the length-proportional top-k.
         scored.sort(key=lambda x: -x[1])
-        self._h_salience_ordered = [w for w, _ in scored]
         k = dynamic_k(input_text, cap=len(scored))
         return [w for w, _ in scored[:k]]
 

@@ -2,7 +2,6 @@ import re
 import html
 import string
 import logging
-import difflib
 from typing import List, Set, Optional
 
 logger = logging.getLogger(__name__)
@@ -239,33 +238,3 @@ class Normalizer:
         if re.search(r'\b' + re.escape(norm_token) + r'\b', norm_input):
             return True
         return bool(self._anchor_lemmas(norm_token) & self._input_anchor_lemmas(input_text))
-
-    def _exact_or_fuzzy_match(self, token: str, input_text: str) -> bool:
-        if token.lower() in input_text.lower():
-            return True
-        for input_word in input_text.lower().split():
-            ratio = difflib.SequenceMatcher(None, token.lower(), input_word).ratio()
-            if ratio >= 0.85:
-                return True
-        return False
-
-    def is_verbatim_in_input(self, token: str, input_text: str) -> bool:
-        """Check if a token appears verbatim in the input text (before lemmatization).
-        Uses exact substring match first, then fuzzy match with 0.85 threshold.
-        Returns True if match found."""
-        return self._exact_or_fuzzy_match(token, input_text)
-
-    def check_evidence_compliance(self, evidence_tokens: List[str], input_text: str) -> int:
-        """Count how many evidence tokens are NOT verbatim in input (compliance violations).
-        Uses exact match first, then fuzzy match at 0.85 threshold.
-        Returns number of violations. Logs warnings for each violation."""
-        violations = 0
-        for token in evidence_tokens:
-            if not self.is_verbatim_in_input(token, input_text):
-                logger.warning(f"Evidence compliance violation: '{token}' not verbatim in input")
-                violations += 1
-            else:
-                fuzzy_only = not (token.lower() in input_text.lower())
-                if fuzzy_only:
-                    logger.info(f"Evidence token '{token}' matched via fuzzy similarity (not exact)")
-        return violations

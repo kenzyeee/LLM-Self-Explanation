@@ -18,6 +18,7 @@ def _expected_random_overlap(a_size: int, b_size: int, vocab_size: int,
         return 0.0, 0.0
     rng = np.random.default_rng(seed)
     vocab = np.arange(vocab_size)
+    smaller = min(a_size, b_size)  # loop-invariant: a_size/b_size are fixed and > 0 here
     jac_sum = 0.0
     ovl_sum = 0.0
     for _ in range(n_sims):
@@ -26,7 +27,6 @@ def _expected_random_overlap(a_size: int, b_size: int, vocab_size: int,
         inter = len(a & b)
         union = len(a | b)
         jac_sum += (inter / union) if union else 0.0
-        smaller = min(a_size, b_size)
         ovl_sum += (inter / smaller) if smaller else 0.0
     return jac_sum / n_sims, ovl_sum / n_sims
 

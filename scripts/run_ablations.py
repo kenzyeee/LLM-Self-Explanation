@@ -113,7 +113,7 @@ def normalize_token_list(raw_tokens: List[str], normalizer: Normalizer) -> Set[s
     return normalizer.normalize_tokens(raw_tokens)
 
 
-def compute_ecs_from_token_sets(sets: Dict[str, Set[str]], calc: MetricsCalculator) -> float:
+def compute_ecs_from_token_sets(sets: Dict[str, Set[str]], calc: MetricsCalculator) -> Optional[float]:
     explanations = {s: sets.get(s, set()) for s in STRATEGY_IDS}
     agreements = calc.compute_pairwise_agreements(explanations)
     return calc.compute_ecs(agreements)
@@ -240,7 +240,8 @@ async def run_ablations(config, args):
                     variant_sets = dict(bd["token_sets"])
                     variant_sets[s] = alt_set
                     variant_ecs = compute_ecs_from_token_sets(variant_sets, calc)
-                    deltas.append(variant_ecs - bd["baseline_ecs"])
+                    if variant_ecs is not None and bd["baseline_ecs"] is not None:
+                        deltas.append(variant_ecs - bd["baseline_ecs"])
 
                 mean_delta = float(np.mean(deltas)) if deltas else 0.0
                 prompt_results[f"{s}_alt"] = {
@@ -273,7 +274,8 @@ async def run_ablations(config, args):
                     for s in STRATEGY_IDS:
                         variant_sets[s] = normalize_token_list(bd["raw_tokens"][s], var_normalizer)
                     variant_ecs = compute_ecs_from_token_sets(variant_sets, calc)
-                    deltas.append(variant_ecs - bd["baseline_ecs"])
+                    if variant_ecs is not None and bd["baseline_ecs"] is not None:
+                        deltas.append(variant_ecs - bd["baseline_ecs"])
 
                 mean_delta = float(np.mean(deltas)) if deltas else 0.0
                 norm_results[var_name] = {"mean_delta": mean_delta, "n_instances": len(deltas), "deltas": deltas}
@@ -320,7 +322,8 @@ async def run_ablations(config, args):
                     variant_sets = dict(bd["token_sets"])
                     variant_sets["H"] = k_set
                     variant_ecs = compute_ecs_from_token_sets(variant_sets, calc)
-                    deltas.append(variant_ecs - bd["baseline_ecs"])
+                    if variant_ecs is not None and bd["baseline_ecs"] is not None:
+                        deltas.append(variant_ecs - bd["baseline_ecs"])
 
                 mean_delta = float(np.mean(deltas)) if deltas else 0.0
                 k_results[f"k={k}"] = {"mean_delta": mean_delta, "n_instances": len(deltas), "deltas": deltas}

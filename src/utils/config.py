@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, field, asdict
 from typing import List, Optional, Dict, Any
-from pathlib import Path
 
 
 @dataclass

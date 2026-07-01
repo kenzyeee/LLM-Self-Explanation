@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 import logging
-from typing import Set, List, Dict, Optional, Tuple
+from typing import Set, List, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
 from openai import AsyncOpenAI
@@ -282,7 +282,6 @@ class InferenceEngine:
         return ExplanationResult(strategy=strategy, raw_response=raw_response, timestamp=datetime.now())
 
     async def classify_with_mask(self, prompt: str, masked_tokens: Set[str]) -> ClassificationResult:
-        import re
         content, usage = await self._complete([{"role": "user", "content": prompt}], 1024, self.max_retries)
         label_match = re.search(r'"label"\s*:\s*"([^"]+)"', content)
         label = label_match.group(1) if label_match else ""

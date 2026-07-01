@@ -19,7 +19,7 @@ def get_latest_output():
 
 
 def show_summary(out):
-    with open(out / "aggregate_metrics.json") as f:
+    with open(out / "aggregate_metrics.json", encoding="utf-8") as f:
         agg = json.load(f)
     overall = next(m for m in agg if m["aggregation_level"] == "overall")
 
@@ -69,7 +69,7 @@ def show_summary(out):
     for p in ["H_R", "H_CF", "H_RO", "R_CF", "R_RO", "CF_RO"]:
         print(f"  {p:<7}  {overall['mean_jaccard_'+p]:.4f}")
 
-    with open(out / "instance_results.jsonl") as f:
+    with open(out / "instance_results.jsonl", encoding="utf-8") as f:
         insts = [json.loads(l) for l in f if l.strip()]
     valid = [i for i in insts if i.get("ecs") is not None]
     valid.sort(key=lambda x: x["ecs"])
@@ -81,7 +81,7 @@ def show_summary(out):
     # Erasure / faithfulness anchor (separate consistency axis), if the pass has run
     erasure_path = out / "aggregate_erasure.json"
     if erasure_path.exists():
-        with open(erasure_path) as f:
+        with open(erasure_path, encoding="utf-8") as f:
             er = json.load(f)
         o = er.get("overall", {})
         ops = o.get("operators", [])

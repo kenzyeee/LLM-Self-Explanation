@@ -3,15 +3,12 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, Any, List
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.data_models import (
-    InstanceResult, AggregateMetrics, ValidityTestResult,
     load_instance_results, load_aggregate_metrics
 )
-from src.utils.logging_config import setup_logging
 from src.utils.pretty_printer import PrettyPrinter
 
 logger = logging.getLogger(__name__)

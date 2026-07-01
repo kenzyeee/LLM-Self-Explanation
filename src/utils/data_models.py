@@ -5,7 +5,6 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Set, List, Tuple, Dict, Optional, Any
-from src.utils.exceptions import ParsingError
 from src.metrics.redaction_test import RedactionTestResult
 
 
@@ -468,7 +467,8 @@ class ExecutionSummary:
 
     def generate_report(self) -> str:
         success_rate = (self.successful_instances / self.total_instances * 100) if self.total_instances > 0 else 0
-        api_success_rate = ((self.api_requests_total - self.api_requests_failed) / self.api_requests_total * 100) if self.api_requests_total > 0 else 0
+        failure_rate = (self.failed_instances / self.total_instances * 100) if self.total_instances > 0 else 0
+        api_failure_rate = (self.api_requests_failed / self.api_requests_total * 100) if self.api_requests_total > 0 else 0
         report = f"""
 Execution Summary
 =================
@@ -481,7 +481,7 @@ Processing Statistics
 ---------------------
 Total Instances: {self.total_instances}
 Successful: {self.successful_instances} ({success_rate:.1f}%)
-Failed: {self.failed_instances} ({100 - success_rate:.1f}%)
+Failed: {self.failed_instances} ({failure_rate:.1f}%)
 
 Failure Breakdown
 -----------------
@@ -506,7 +506,7 @@ Performance Metrics
 -------------------
 Average Time per Instance: {self.avg_time_per_instance:.2f} seconds
 Total API Requests: {self.api_requests_total}
-Failed API Requests: {self.api_requests_failed} ({100 - api_success_rate:.1f}%)
+Failed API Requests: {self.api_requests_failed} ({api_failure_rate:.1f}%)
 """
         return report.strip()
 
