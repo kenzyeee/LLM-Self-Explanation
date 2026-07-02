@@ -147,3 +147,29 @@ class TestRedactionTest:
             return "pos"
         with pytest.raises(ValueError):
             RedactionTest(classify, operator="blank")
+
+    def test_redact_all_occurrences_not_just_first(self):
+        text = "the movie was great, a truly great movie"
+        redacted = RedactionTest._redact_tokens(text, ["great"])
+        # Punctuation attached to a redacted word is dropped along with it, same as
+        # the existing single-occurrence punctuation-stripping behavior.
+        assert redacted == "the movie was [MASK] a truly [MASK] movie"
+
+    def test_redact_all_occurrences_delete(self):
+        text = "bad bad bad food"
+        redacted = RedactionTest._redact_tokens(text, ["bad"], "delete")
+        assert redacted == "food"
+
+    def test_redact_lemma_aware_matches_inflection(self):
+        from src.normalization.normalizer import Normalizer
+        normalizer = Normalizer(use_lemmatization=True)
+        text = "the movies were great"
+        # Evidence token is the lemma "movie"; input has the inflected surface "movies".
+        redacted = RedactionTest._redact_tokens(text, ["movie"], "mask", normalizer)
+        assert redacted == "the [MASK] were great"
+
+    def test_redact_without_normalizer_misses_inflection(self):
+        text = "the movies were great"
+        # Surface-only matching (no normalizer): "movie" does NOT match "movies".
+        redacted = RedactionTest._redact_tokens(text, ["movie"])
+        assert redacted == "the movies were great"

@@ -528,6 +528,15 @@ def generate_md_report(
     overall = next((m for m in aggregate_list if m.aggregation_level == "overall"), None)
     model_dataset = [m for m in aggregate_list if m.aggregation_level == "model_dataset"]
 
+    # InstanceResult.model stores the Bedrock model_id; aggregate group_names use the
+    # study-facing label (config model .name). Map between them so the report can label
+    # models and match per-(model,dataset) accuracy correctly for multi-model runs.
+    id_to_label = {m.model_id: m.name for m in getattr(config, "models", [])}
+    label_to_id = {m.name: m.model_id for m in getattr(config, "models", [])}
+
+    def _model_label(model_id: str) -> str:
+        return id_to_label.get(model_id, model_id)
+
     lines = []
     exp_name = config.experiment.name if hasattr(config, 'experiment') else "experiment"
     lines.append(f"# Experiment Report: {exp_name}")
@@ -542,7 +551,14 @@ def generate_md_report(
         n_truncated = sum(len(getattr(r, 'truncated_strategies', None) or []) for r in all_results)
         lines.append(f"- **Date:** {t0.strftime('%Y-%m-%d %H:%M:%S')}")
         lines.append(f"- **Duration:** {dur:.1f}s ({dur/60:.1f}m)")
-        lines.append(f"- **Model:** {all_results[0].model}")
+        # Distinct models actually present in the results (config order, then any extras),
+        # each shown as "label (`model_id`)". A single-model run keeps the old "Model:" line.
+        present_ids = list(dict.fromkeys(r.model for r in all_results))
+        model_strs = [f"{_model_label(mid)} (`{mid}`)" for mid in present_ids]
+        if len(model_strs) <= 1:
+            lines.append(f"- **Model:** {model_strs[0] if model_strs else '—'}")
+        else:
+            lines.append(f"- **Models ({len(model_strs)}):** {', '.join(model_strs)}")
         lines.append(f"- **Total instances:** {len(all_results)}")
         lines.append(f"- **Model refusals:** {n_refused} ({n_refused/max(len(all_results),1)*100:.1f}%)")
         lines.append(f"- **Total tokens processed:** {total_tokens}")
@@ -553,18 +569,21 @@ def generate_md_report(
     lines.append("")
     lines.append("## Per-Dataset Summary")
     lines.append("")
-    lines.append("| Dataset | Instances | Accuracy | Mean ECS | H | R | CF | RO |")
-    lines.append("|---------|-----------|----------|----------|---|---|------|---|")
+    lines.append("| Model | Dataset | Instances | Accuracy | Mean ECS | H | R | CF | RO |")
+    lines.append("|-------|---------|-----------|----------|----------|---|---|------|---|")
 
     for md in model_dataset:
         parts = md.group_name.split("_", 1)
         ds = parts[1] if len(parts) > 1 else md.group_name
-        model_name = parts[0] if len(parts) > 1 else ""
-        ds_results = [r for r in all_results if r.dataset == ds and (not model_name or r.model.startswith(model_name))]
+        model_label = parts[0] if len(parts) > 1 else ""
+        # Match results by model_id (results store the Bedrock id, not the label).
+        model_id = label_to_id.get(model_label, "")
+        ds_results = [r for r in all_results
+                      if r.dataset == ds and (not model_id or r.model == model_id)]
         correct = sum(1 for r in ds_results if r.correct)
         acc = f"{correct}/{len(ds_results)} ({correct/max(len(ds_results),1)*100:.0f}%)" if ds_results else "—"
         lines.append(
-            f"| {ds} | {md.n_instances} | {acc} | {md.mean_ecs:.3f} | "
+            f"| {model_label or '—'} | {ds} | {md.n_instances} | {acc} | {md.mean_ecs:.3f} | "
             f"{md.highlighting_success_rate*100:.0f}% | {md.rationale_success_rate*100:.0f}% | "
             f"{md.counterfactual_success_rate*100:.0f}% | {md.rank_ordering_success_rate*100:.0f}% |"
         )
@@ -573,13 +592,14 @@ def generate_md_report(
         lines.append("")
         lines.append("## Sampling Log")
         lines.append("")
-        lines.append("| Dataset | Requested | Sampled | Wrong Pred |")
-        lines.append("|---------|-----------|---------|------------|")
+        lines.append("| Model | Dataset | Requested | Sampled | Wrong Pred |")
+        lines.append("|-------|---------|-----------|---------|------------|")
         for md in model_dataset:
             parts = md.group_name.split("_", 1)
             ds = parts[1] if len(parts) > 1 else md.group_name
-            lines.append(f"| {ds} | {md.requested_samples} | {md.sampled_samples} | {md.dropped_wrong_pred} |")
-        lines.append(f"| **Total** | {sum(m.requested_samples for m in model_dataset)} | {sum(m.sampled_samples for m in model_dataset)} | {sum(m.dropped_wrong_pred for m in model_dataset)} |")
+            model_label = parts[0] if len(parts) > 1 else "—"
+            lines.append(f"| {model_label} | {ds} | {md.requested_samples} | {md.sampled_samples} | {md.dropped_wrong_pred} |")
+        lines.append(f"| **Total** | | {sum(m.requested_samples for m in model_dataset)} | {sum(m.sampled_samples for m in model_dataset)} | {sum(m.dropped_wrong_pred for m in model_dataset)} |")
 
         lines.append("")
         lines.append(f"**Note:** No long inputs (>50 words) were sampled. All instances are short (≤20 words, N={overall.n_short}) or medium-length (21–50 words, N={overall.n_medium}). ECS may partly reflect brevity.")
@@ -637,6 +657,13 @@ def generate_md_report(
         lines.append(f"| Median ECS | {overall.median_ecs:.4f} |")
         lines.append(f"| **Mean ECS lift over chance** (ECS − random) | {overall.mean_ecs_lift:+.4f} |")
         lines.append(f"| Mean ECS random baseline | {overall.mean_ecs_random:.4f} |")
+        lines.append("")
+        lines.append("> **No significance testing applied.** The lift, correct-vs-incorrect split, "
+                     "length/vocab strata, and any other comparison above are point estimates (plus the "
+                     "bootstrap CI on mean ECS where shown) — no hypothesis test or multiple-comparison "
+                     "correction has been run, regardless of what `config/experiment.yaml` declares. At "
+                     "this pilot N, treat every comparison in this report as descriptive.")
+        lines.append("")
         lines.append(f"| Mean ECS — correct preds (N={overall.n_correct}) | {overall.mean_ecs_correct:.4f} |")
         lines.append(f"| Mean ECS — incorrect preds (N={overall.n_incorrect}) | {overall.mean_ecs_incorrect:.4f} |")
         lines.append(f"| Introduced-concept rate (R) | {overall.introduced_concept_rate:.3f} |")
@@ -677,7 +704,7 @@ def generate_md_report(
         lines.append(f"| Kendall τ (H,RO) | {overall.mean_kendall_H_RO:.4f} |")
         lines.append(f"| Normalized τ | {overall.mean_normalized_kendall_H_RO:.4f} |")
         lines.append("")
-        lines.append("> Overlap Coefficient is the primary pairwise metric (unlike Jaccard, it is not penalized by smaller salience sets). Jaccard is retained as a secondary reference. RBO measures top-weighted rank agreement between H's graded salience order and RO's selected ranking; Kendall τ provides a complementary rank correlation measure.")
+        lines.append("> Jaccard is what feeds the headline ECS and ECS-lift (both computed from Jaccard pairwise agreement, never Overlap Coefficient). Overlap Coefficient is reported here as a size-robust complement — unlike Jaccard, it is not penalized by smaller salience sets — for interpreting individual pairs, not for the headline number. RBO measures top-weighted rank agreement between H's graded salience order and RO's selected ranking; Kendall τ provides a complementary rank correlation measure.")
 
         lines.append("")
         lines.append("### Validation Rates (strict)")
@@ -706,7 +733,7 @@ def generate_md_report(
         lines.append(f"| 3 valid (CC3 adjusted) | {sum(1 for r in all_results if r.n_valid_strategies == 3)}/{n_total} |")
         lines.append("")
         lines.append("CC is computed over valid strategies only. When CF is missing, CC3-of-3 replaces CC4-of-4.")
-        lines.append("ECS is computed using validated outputs only. The H–RO pair is excluded (same paradigm family). Full ECS averages the 5 remaining cross-paradigm pairs. Primary ECS averages H–CF and CF–RO (evidence-list methods). H–RO agreement is measured via Overlap Coefficient (set), Kendall τ (rank correlation), and RBO (top-weighted rank).")
+        lines.append("ECS is computed using validated outputs only. The H–RO pair is excluded (same paradigm family). Full ECS averages the 5 remaining cross-paradigm pairs (all Jaccard). Primary ECS is two composites: extraction–rationale averages (H,R) and (R,RO); extraction–perturbation averages (H,CF) and (CF,RO). H–RO agreement is measured via Overlap Coefficient (set), Kendall τ (rank correlation), and RBO (top-weighted rank).")
 
         lines.append("")
         lines.append("### ECS by Input Length")
@@ -740,7 +767,7 @@ def generate_md_report(
     lines.append("## Per-Instance Details")
     lines.append("")
     for r in all_results:
-        lines.append(f"### {r.instance_id}")
+        lines.append(f"### {r.instance_id} — {_model_label(r.model)}")
         lines.append("")
         if not r.correct:
             lines.append("> **SKIPPED**: Wrong prediction — no explanation strategies elicited, no ECS computed.")

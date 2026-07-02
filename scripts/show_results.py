@@ -95,6 +95,9 @@ def show_summary(out):
         tiers = er.get("by_ecs_lift_tier", {})
         if tiers and ops:
             print(f"  CC3-minus-random gap by ECS-lift tier (operator={ops[0]}):")
+            print("    CAVEAT: tertiles are data-dependent thresholds over this run's own")
+            print("    lifts, no significance test is applied to the gap or its trend across")
+            print("    tiers — treat as descriptive only, especially at N per tier this small.")
             for tier in ["low", "mid", "high"]:
                 if tier in tiers:
                     t = tiers[tier]

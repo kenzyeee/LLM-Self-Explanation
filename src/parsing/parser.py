@@ -63,6 +63,28 @@ def _get_spacy():
     return _nlp
 
 
+def ensure_spacy_available() -> None:
+    """Hard-fail at startup if spaCy's POS tagger is unavailable.
+
+    parse_rationale silently falls back to whitespace-split content-word extraction
+    per-instance when spaCy is missing (see its docstring) — which changes the R
+    token set, and therefore ECS, depending on the machine's environment. That
+    fallback exists so a single instance doesn't fail outright; it must not be how
+    an entire collection run quietly happens. Call this once before collection
+    starts so a missing model is a loud, immediate error instead of a silent
+    per-instance degradation discovered only when comparing runs.
+    """
+    if _get_spacy() is None:
+        raise RuntimeError(
+            "spaCy model 'en_core_web_sm' is not available, but rationale (R) token "
+            "extraction depends on it for reproducible results. Install it with:\n"
+            "  pip install spacy && python -m spacy download en_core_web_sm\n"
+            "(Without it, R falls back to whitespace-split extraction, which yields a "
+            "different token set than POS-lemma extraction and would make this run "
+            "silently incomparable to any run made with spaCy available.)"
+        )
+
+
 class Parser:
     @staticmethod
     def _is_single_word(s: str) -> bool:
@@ -234,6 +256,12 @@ class Parser:
         new_pred = obj.get("new_prediction")
         if rewritten is None or new_pred is None:
             raise ParsingError("Counterfactual declared impossible (null rewritten or prediction)")
+        # Guard the field type before any string ops: some models emit a nested object or
+        # list for "rewritten" (e.g. {"rewritten": {...}}), and rewritten.strip() below
+        # would raise AttributeError — which escapes the caller's ParsingError handler and
+        # kills the whole instance. Fail as a ParsingError so only CF is invalidated.
+        if not isinstance(rewritten, str):
+            raise ParsingError(f"Counterfactual 'rewritten' must be a string, got {type(rewritten).__name__}")
         if not isinstance(new_pred, str) or new_pred not in label_set:
             raise ParsingError(f"New prediction '{new_pred}' not in label set")
         if new_pred == original_label:

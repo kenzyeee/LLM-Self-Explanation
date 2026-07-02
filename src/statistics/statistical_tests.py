@@ -1,7 +1,9 @@
 import numpy as np
 import scipy.stats
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from dataclasses import dataclass
+
+from src.utils.exceptions import ValidationError
 
 
 @dataclass
@@ -42,13 +44,15 @@ def compute_confidence_ecs_correlation(confidences: List[float], ecs_values: Lis
     return CorrelationResult(rho=float(rho), p_value=float(p_value), ci_lower=ci_lower, ci_upper=ci_upper)
 
 
-def permutation_test(group1: List[float], group2: List[float], n_permutations: int = 10000) -> float:
+def permutation_test(group1: List[float], group2: List[float], n_permutations: int = 10000,
+                      seed: Optional[int] = None) -> float:
     observed = abs(np.mean(group1) - np.mean(group2))
-    combined = group1 + group2
+    combined = list(group1) + list(group2)
     n1 = len(group1)
+    rng = np.random.default_rng(seed)
     count = 0
     for _ in range(n_permutations):
-        np.random.shuffle(combined)
+        rng.shuffle(combined)
         perm_mean1 = np.mean(combined[:n1])
         perm_mean2 = np.mean(combined[n1:])
         if abs(perm_mean1 - perm_mean2) >= observed:
@@ -69,12 +73,20 @@ def are_significant(p_values: List[float], corrected: bool = True, alpha: float 
 
 
 def wilcoxon_signed_rank_test(group1: List[float], group2: List[float]) -> StatisticalTest:
+    """Paired test: group1[i] and group2[i] must be the same instance under two conditions.
+
+    Silently truncating unequal-length groups to min(len) would pair up unrelated
+    instances (e.g. group1[i] from one instance, group2[i] from another) and produce
+    a meaningless statistic — so a length mismatch is a caller bug, not a case to
+    paper over.
+    """
+    if len(group1) != len(group2):
+        raise ValidationError(
+            f"wilcoxon_signed_rank_test requires paired equal-length groups, "
+            f"got {len(group1)} vs {len(group2)}"
+        )
     if len(group1) < 2 or len(group2) < 2:
         return StatisticalTest(t_statistic=0.0, p_value=1.0)
-    if len(group1) != len(group2):
-        min_len = min(len(group1), len(group2))
-        group1 = group1[:min_len]
-        group2 = group2[:min_len]
     try:
         stat, p_value = scipy.stats.wilcoxon(group1, group2)
         if np.isnan(stat):
@@ -98,17 +110,25 @@ def one_sample_ttest(values: List[float], popmean: float = 0.0) -> Tuple[float, 
 
 
 def paired_ttest(group1: List[float], group2: List[float]) -> StatisticalTest:
+    """Paired test: group1[i] and group2[i] must be the same instance under two conditions.
+
+    See wilcoxon_signed_rank_test for why a length mismatch raises rather than
+    truncating-and-mispairing.
+    """
+    if len(group1) != len(group2):
+        raise ValidationError(
+            f"paired_ttest requires paired equal-length groups, "
+            f"got {len(group1)} vs {len(group2)}"
+        )
     if len(group1) < 2 or len(group2) < 2:
         return StatisticalTest(t_statistic=0.0, p_value=1.0)
-    min_len = min(len(group1), len(group2))
-    group1 = group1[:min_len]
-    group2 = group2[:min_len]
+    n = len(group1)
     try:
         t_stat, p_value = scipy.stats.ttest_rel(group1, group2)
         if np.isnan(t_stat):
             return StatisticalTest(t_statistic=0.0, p_value=1.0)
         diff = np.mean(group1) - np.mean(group2)
-        std_diff = np.std([group1[i] - group2[i] for i in range(min_len)])
+        std_diff = np.std([group1[i] - group2[i] for i in range(n)])
         effect_size = float(diff / std_diff) if std_diff > 0 else 0.0
         return StatisticalTest(t_statistic=float(t_stat), p_value=float(p_value), mean_diff=float(diff), effect_size=effect_size)
     except Exception:

@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 
 from src.inference.inference_engine import InferenceEngine
+from src.normalization.normalizer import Normalizer
 from src.parsing.parser import Parser
 from src.utils.config_loader import load_and_validate_config, parse_command_line_args
 from src.utils.logging_config import setup_logging
@@ -54,17 +55,30 @@ def load_instance_results(filepath: str) -> List[Dict[str, Any]]:
     return results
 
 
-def erase(text: str, tokens: Set[str], operator: str, mask_token: str = "[MASK]") -> str:
+def erase(text: str, tokens: Set[str], operator: str, normalizer: Optional[Normalizer] = None,
+         mask_token: str = "[MASK]") -> str:
     """Erase whole-word occurrences of `tokens` from `text`.
 
     operator="mask" -> replace with [MASK]; operator="delete" -> drop entirely.
-    Matching is case-insensitive on the punctuation-stripped surface word.
+    Matching is case-insensitive on the punctuation-stripped surface word. With a
+    normalizer, a word also matches if it shares a WordNet lemma with a token to
+    erase — the same morphology-aware criterion Normalizer.is_anchored used to
+    anchor evidence to the input in the first place. Without this, an evidence
+    lemma ("movie") silently fails to erase an inflected input occurrence
+    ("movies"), understating flip rates for every strategy/CC/random comparison.
     """
     toks = {t.lower() for t in tokens}
+    lemma_pool = set()
+    if normalizer is not None:
+        for t in toks:
+            lemma_pool |= normalizer._anchor_lemmas(t)
     out = []
     for w in text.split():
         clean = w.strip(_PUNCT).lower()
-        if clean and clean in toks:
+        is_match = bool(clean) and clean in toks
+        if not is_match and normalizer is not None and clean:
+            is_match = bool(normalizer._anchor_lemmas(clean) & lemma_pool)
+        if is_match:
             if operator == "mask":
                 out.append(mask_token)
             # delete: append nothing
@@ -87,21 +101,35 @@ async def classify(engine: InferenceEngine, parser: Parser, class_prompt: str,
 
 
 async def flip_after_erasure(engine, parser, class_prompt, text, tokens, operator,
-                             label_set, original) -> Optional[bool]:
+                             label_set, original, normalizer: Optional[Normalizer] = None) -> Optional[bool]:
     """Erase `tokens` under `operator`; True if the prediction flipped. None if
     no tokens or the re-classification was unparseable."""
     if not tokens:
         return None
-    pred = await classify(engine, parser, class_prompt, erase(text, set(tokens), operator), label_set)
+    pred = await classify(engine, parser, class_prompt, erase(text, set(tokens), operator, normalizer), label_set)
     if not pred:
         return None
     return pred != original
 
 
 async def random_flip_rate(engine, parser, class_prompt, text, n, operator,
-                           label_set, original, trials, seed) -> Optional[float]:
-    """Flip rate when erasing `n` RANDOM unique tokens, averaged over `trials`."""
-    words = list(dict.fromkeys(w.strip(_PUNCT).lower() for w in text.split() if w.strip(_PUNCT)))
+                           label_set, original, trials, seed,
+                           normalizer: Optional[Normalizer] = None) -> Optional[float]:
+    """Flip rate when erasing `n` RANDOM unique CONTENT-word tokens, averaged over
+    `trials`. The control must be matched in token type to what it's compared
+    against: CC tokens are normalized content-word lemmas (stopwords/discourse
+    words already excluded), not raw surface words. Drawing the random sample from
+    ALL surface words — including "the", "a", "is" — makes stopword draws common;
+    stopwords rarely carry the prediction, so the random flip rate is
+    under-estimated and the CC-minus-random gap is inflated. Restricting the pool
+    to words that survive the same content-word filter (normalizer.normalize)
+    removes that mismatch.
+    """
+    surface_words = list(dict.fromkeys(w.strip(_PUNCT).lower() for w in text.split() if w.strip(_PUNCT)))
+    if normalizer is not None:
+        words = [w for w in surface_words if normalizer.normalize(w) is not None]
+    else:
+        words = surface_words
     if n <= 0 or not words:
         return None
     rng = random.Random(seed)
@@ -109,7 +137,7 @@ async def random_flip_rate(engine, parser, class_prompt, text, n, operator,
     flips = []
     for _ in range(trials):
         sample = set(rng.sample(words, k))
-        pred = await classify(engine, parser, class_prompt, erase(text, sample, operator), label_set)
+        pred = await classify(engine, parser, class_prompt, erase(text, sample, operator, normalizer), label_set)
         if pred:
             flips.append(1 if pred != original else 0)
     return (sum(flips) / len(flips)) if flips else None
@@ -120,7 +148,8 @@ def _ro_tokens(data: Dict[str, Any]) -> List[str]:
 
 
 async def process_instance_erasure(data, engine, parser, class_prompt, label_set,
-                                   operators, trials, seed) -> Dict[str, Any]:
+                                   operators, trials, seed,
+                                   normalizer: Optional[Normalizer] = None) -> Dict[str, Any]:
     text = data["text"]
     original = data.get("predicted_label", "")
     strat_sets = {
@@ -151,17 +180,20 @@ async def process_instance_erasure(data, engine, parser, class_prompt, label_set
     for s, toks in strat_sets.items():
         entry = {"n": len(toks)}
         for op in operators:
-            entry[op] = await flip_after_erasure(engine, parser, class_prompt, text, toks, op, label_set, original)
+            entry[op] = await flip_after_erasure(engine, parser, class_prompt, text, toks, op, label_set,
+                                                  original, normalizer)
         rec["strategy_erasure"][s] = entry
 
     for op in operators:
-        rec["cc3"][op] = await flip_after_erasure(engine, parser, class_prompt, text, cc3, op, label_set, original)
-        rec["cc4"][op] = await flip_after_erasure(engine, parser, class_prompt, text, cc4, op, label_set, original)
+        rec["cc3"][op] = await flip_after_erasure(engine, parser, class_prompt, text, cc3, op, label_set,
+                                                   original, normalizer)
+        rec["cc4"][op] = await flip_after_erasure(engine, parser, class_prompt, text, cc4, op, label_set,
+                                                   original, normalizer)
 
     n_random = len(cc3) if cc3 else len(cc4)
     for op in operators:
         rec["random_cc3"][f"{op}_rate"] = await random_flip_rate(
-            engine, parser, class_prompt, text, n_random, op, label_set, original, trials, seed)
+            engine, parser, class_prompt, text, n_random, op, label_set, original, trials, seed, normalizer)
     return rec
 
 
@@ -253,6 +285,13 @@ async def run(config, args):
         concurrent_requests=config.inference.concurrent_requests,
     )
     parser = Parser()
+    # Mirror the live collection run's normalization settings so erasure matches
+    # evidence tokens the same way they were anchored to the input during extraction.
+    normalizer = Normalizer(
+        use_lemmatization=config.normalization.use_lemmatization,
+        remove_stopwords=config.normalization.remove_stopwords,
+        lemmatizer=config.normalization.lemmatizer,
+    )
 
     prompt_cache: Dict[str, str] = {}
 
@@ -271,7 +310,7 @@ async def run(config, args):
         label_set = ds_cfg.labels if ds_cfg else ["positive", "negative"]
         rec = await process_instance_erasure(
             data, engine, parser, class_prompt_for(ds), label_set,
-            operators, trials, seed=config.experiment.seed + i)
+            operators, trials, seed=config.experiment.seed + i, normalizer=normalizer)
         records.append(rec)
         logger.info(f"[{i+1}/{len(instances)}] {rec['instance_id']} erasure done")
 

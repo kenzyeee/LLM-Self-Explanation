@@ -932,8 +932,7 @@ llm-explanation-agreement-study/
 ├── config/
 │   ├── datasets.yaml          # Dataset configurations
 │   ├── models.yaml            # Model configurations
-│   ├── normalization.yaml     # Normalization configurations
-│   └── experiment.yaml        # Experiment parameters
+│   └── experiment.yaml        # Experiment parameters (normalization lives inline here)
 ├── prompts/
 │   ├── classification.txt
 │   ├── highlighting.txt

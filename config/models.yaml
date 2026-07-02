@@ -1,13 +1,46 @@
 # Model-Specific Configurations
+#
+# Three distinct Bedrock model families for the cross-model explanation-agreement
+# comparison. run_experiment.py runs them concurrently per dataset.
+#
+# Region = eu-north-1. All three models are NON-ANTHROPIC (2026-07-02): Anthropic access
+# is blocked by an AWS Marketplace subscription that cannot complete on this account
+# (INVALID_PAYMENT_INSTRUMENT), so Claude was dropped. Meta Llama is not offered in ANY
+# EU region and Mistral Large is absent from eu-north-1, so the final trio of distinct
+# families is Amazon (Nova Pro), Qwen/Alibaba (Qwen3-235B), and DeepSeek (V3).
+#
+# Invocation ids reflect eu-north-1 availability: Nova Pro is INFERENCE_PROFILE-only there
+# (eu.* cross-region profile; us.* does NOT resolve from an EU region); Qwen3 and DeepSeek
+# V3 are ON_DEMAND (base id, no profile). AWS_REGION must be an EU region.
+#
+# NOTE: the Bedrock Converse API does not return per-token logprobs for any of these
+# models — confidence via logprobs is unavailable, so the confidence axis is
+# intentionally dropped for all three (consistent with the original single-model design).
 
 models:
-  llama-3.3-70b-versatile:
-    name: "llama-3.3-70b-versatile"
-    model_id: "llama-3.3-70b-versatile"
-    description: "Llama 3.3 70B Versatile (via Groq)"
+  nova-pro:
+    name: "nova-pro"
+    model_id: "eu.amazon.nova-pro-v1:0"
+    description: "Amazon Nova Pro (via AWS Bedrock, EU inference profile)"
+    context_window: 300000
+    default_temperature: 0
+    default_top_p: 1
+    supports_function_calling: true
+
+  qwen3-235b:
+    name: "qwen3-235b"
+    model_id: "qwen.qwen3-235b-a22b-2507-v1:0"
+    description: "Qwen3 235B A22B Instruct 2507 (via AWS Bedrock, on-demand)"
+    context_window: 262144
+    default_temperature: 0
+    default_top_p: 1
+    supports_function_calling: true
+
+  deepseek-v3:
+    name: "deepseek-v3"
+    model_id: "deepseek.v3-v1:0"
+    description: "DeepSeek V3 (via AWS Bedrock, on-demand)"
     context_window: 131072
     default_temperature: 0
     default_top_p: 1
     supports_function_calling: true
-    # NOTE: Groq returns 400 'logprobs not supported' for this model — confidence
-    # via logprobs is unavailable; the confidence axis is intentionally dropped.

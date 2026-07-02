@@ -99,6 +99,33 @@ class TestMetricsCalculator:
     def test_ecs_no_agreements(self, calc):
         assert calc.compute_ecs({}) is None
 
+    def test_ecs_primary_uses_both_pairs_per_composite(self, calc):
+        # Pair keys as compute_pairwise_agreements actually stores them: ordered by
+        # index within ["H","R","CF","RO"], so RO always appears second — ("R","RO"),
+        # ("CF","RO") — never ("RO","R")/("RO","CF"). A regression here (looking up
+        # the reversed tuple) silently drops the RO pair from both composites.
+        agreements = {
+            ("H", "R"): 0.4, ("H", "CF"): 0.6, ("H", "RO"): 0.9,
+            ("R", "CF"): 0.5, ("R", "RO"): 0.8, ("CF", "RO"): 0.2,
+        }
+        er_mean, ep_mean, n_pairs = calc.compute_ecs_primary(agreements)
+        assert er_mean == pytest.approx((0.4 + 0.8) / 2)  # (H,R) and (R,RO)
+        assert ep_mean == pytest.approx((0.6 + 0.2) / 2)  # (H,CF) and (CF,RO)
+        assert n_pairs == 4
+
+    def test_ecs_primary_missing_ro_pairs(self, calc):
+        agreements = {("H", "R"): 0.4, ("H", "CF"): 0.6}
+        er_mean, ep_mean, n_pairs = calc.compute_ecs_primary(agreements)
+        assert er_mean == pytest.approx(0.4)
+        assert ep_mean == pytest.approx(0.6)
+        assert n_pairs == 2
+
+    def test_ecs_primary_empty(self, calc):
+        er_mean, ep_mean, n_pairs = calc.compute_ecs_primary({})
+        assert er_mean is None
+        assert ep_mean is None
+        assert n_pairs == 0
+
     def test_consensus_core_cc3(self, calc):
         explanations = {
             "H": {"a", "b", "c"},

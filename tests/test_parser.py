@@ -1,6 +1,7 @@
 import json
 import pytest
-from src.parsing.parser import Parser
+from unittest.mock import patch
+from src.parsing.parser import Parser, ensure_spacy_available
 from src.normalization.normalizer import Normalizer
 from src.utils.exceptions import ParsingError
 
@@ -13,6 +14,17 @@ def parser():
 @pytest.fixture
 def normalizer():
     return Normalizer()
+
+
+class TestEnsureSpacyAvailable:
+    def test_passes_when_spacy_available(self):
+        with patch('src.parsing.parser._get_spacy', return_value=object()):
+            ensure_spacy_available()  # must not raise
+
+    def test_raises_when_spacy_unavailable(self):
+        with patch('src.parsing.parser._get_spacy', return_value=None):
+            with pytest.raises(RuntimeError, match="spaCy"):
+                ensure_spacy_available()
 
 
 class TestParseClassification:
@@ -207,6 +219,18 @@ class TestParseCounterfactual:
                 '{"rewritten":null,"new_prediction":null}',
                 "This movie was great.", "positive", ["positive", "negative"], normalizer
             )
+
+    def test_non_string_rewritten_raises_parsing_error(self, parser, normalizer):
+        # Some models emit an object/list for "rewritten". This must raise ParsingError
+        # (so only CF is invalidated), NOT AttributeError (which escapes the caller's
+        # handler and would kill the whole instance).
+        for bad in ('{"rewritten":{"text":"x"},"new_prediction":"negative"}',
+                    '{"rewritten":["a","b"],"new_prediction":"negative"}'):
+            with pytest.raises(ParsingError):
+                parser.parse_counterfactual(
+                    bad, "This movie was great.", "positive",
+                    ["positive", "negative"], normalizer
+                )
 
     def test_identical_text_raises(self, parser, normalizer):
         with pytest.raises(Exception):

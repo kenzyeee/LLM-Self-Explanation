@@ -10,6 +10,7 @@ from src.statistics.statistical_tests import (
     CorrelationResult,
     StatisticalTest,
 )
+from src.utils.exceptions import ValidationError
 
 
 class TestCorrelationResult:
@@ -89,8 +90,9 @@ class TestWilcoxonSignedRankTest:
         assert result.p_value == 1.0
 
     def test_unequal_lengths(self):
-        result = wilcoxon_signed_rank_test([1, 2, 3, 4, 5], [1, 2, 3])
-        assert isinstance(result.t_statistic, float)
+        # Paired test: silently truncating would mispair unrelated instances.
+        with pytest.raises(ValidationError):
+            wilcoxon_signed_rank_test([1, 2, 3, 4, 5], [1, 2, 3])
 
     def test_identical_groups(self):
         result = wilcoxon_signed_rank_test([1, 1, 1], [1, 1, 1])
@@ -155,8 +157,9 @@ class TestPairedTTest:
         assert result.p_value == 1.0
 
     def test_unequal_lengths(self):
-        result = paired_ttest([1, 2, 3, 4], [1, 2, 3])
-        assert isinstance(result.t_statistic, float)
+        # Paired test: silently truncating would mispair unrelated instances.
+        with pytest.raises(ValidationError):
+            paired_ttest([1, 2, 3, 4], [1, 2, 3])
 
     def test_scipy_exception_handling(self):
         with patch('scipy.stats.ttest_rel', side_effect=ValueError("invalid")):

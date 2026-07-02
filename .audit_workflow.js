@@ -297,7 +297,7 @@ const reviewed = await pipeline(
   (review, dim) => {
     if (!review || !review.findings || review.findings.length === 0) return []
     return parallel(review.findings.map((f) => () =>
-      agent(verifyPrompt(dim.key, f), { label: 'verify:' + f.id, phase: 'Verify', schema: VERIFY_SCHEMA, effort: 'high' })
+      agent(verifyPrompt(dim.key, f), { label: 'verify:' + f.id, phase: 'Verify', schema: VERIFY_SCHEMA, effort: 'medium' })
         .then((v) => ({ dimension: dim.key, finding: f, verdict: v }))
     ))
   }
@@ -329,7 +329,7 @@ const critic = await agent(criticPrompt, { label: 'completeness-critic', phase: 
 phase('VerifyGaps')
 const criticFindings = (critic && critic.missed_findings) || []
 const criticVerified = await parallel(criticFindings.map((f) => () =>
-  agent(verifyPrompt('completeness', f), { label: 'verify-gap:' + f.id, phase: 'VerifyGaps', schema: VERIFY_SCHEMA, effort: 'high' })
+  agent(verifyPrompt('completeness', f), { label: 'verify-gap:' + f.id, phase: 'VerifyGaps', schema: VERIFY_SCHEMA, effort: 'medium' })
     .then((v) => ({ dimension: 'completeness', finding: f, verdict: v }))
 ))
 

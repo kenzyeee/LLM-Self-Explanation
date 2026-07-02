@@ -40,17 +40,6 @@ class RateLimitExhausted(APIError):
         super().__init__(message, error_code="API429", details=details)
 
 
-class DailyRateLimitExhausted(RateLimitExhausted):
-    """Raised when a per-day quota (Groq RPD/TPD) is hit.
-
-    Unlike a per-minute limit, waiting out the backoff is futile — the daily window
-    won't free up for hours — so the run should stop and surface the reset time
-    rather than honoring a misleading short retry-after.
-    """
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
-        APIError.__init__(self, message, error_code="API429D", details=details)
-
-
 class ParsingError(ExplanationStudyError):
     def __init__(self, message: str, error_code: str = "PRS000", details: Optional[Dict[str, Any]] = None):
         super().__init__(message, error_code=error_code, details=details)

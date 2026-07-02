@@ -57,6 +57,13 @@ def load_experiment_config(config_dir: Path = Path("config")) -> Config:
                     for key, value in model_details[model["name"]].items():
                         model.setdefault(key, value)
 
+    # Normalization has a single source of truth: the inline `normalization:` block
+    # in experiment.yaml, parsed below by _parse_config. There is deliberately no
+    # separate config/normalization.yaml merged in here — a file merged wholesale
+    # (not setdefault, unlike datasets/models above) would silently override the
+    # experiment's live setting the moment it existed, with no visible diff. Named
+    # normalization variants for ablations live in run_ablations.py's own
+    # NORMALIZATION_VARIANTS dict instead, which is never auto-merged into a run.
     normalization_path = config_dir / "normalization.yaml"
     if normalization_path.exists():
         norm_data = load_yaml(normalization_path)

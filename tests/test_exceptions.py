@@ -218,14 +218,14 @@ class TestConfigurationError:
     
     def test_configuration_error_missing_env_var(self):
         """Test ConfigurationError for missing environment variable."""
-        details = {"env_var": "GROQ_API_KEY"}
+        details = {"env_var": "AWS_ACCESS_KEY_ID"}
         exc = ConfigurationError(
             "Missing required environment variable",
             error_code="CFG003",
             details=details
         )
-        
-        assert exc.details["env_var"] == "GROQ_API_KEY"
+
+        assert exc.details["env_var"] == "AWS_ACCESS_KEY_ID"
     
     def test_raise_configuration_error_convenience(self):
         """Test convenience function for raising ConfigurationError."""

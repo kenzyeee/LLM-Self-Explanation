@@ -3,8 +3,8 @@
 # Dataset loading
 datasets>=2.14.0
 
-# LLM API (OpenAI-compatible, e.g. OpenRouter)
-openai>=1.0.0
+# LLM API (AWS Bedrock runtime, Converse API)
+boto3>=1.34.0
 
 # NLP processing
 nltk>=3.8.0

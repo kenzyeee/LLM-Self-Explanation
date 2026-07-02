@@ -16,17 +16,35 @@ datasets:
     split: "validation_matched"
     sample_size: 10
     labels: ["entailment", "neutral", "contradiction"]
-    cf_max_edit_ratio: 0.8
+    # No cf_max_edit_ratio override: MNLI shares the same 0.3 minimal-edit cap as
+    # SST2/AG News (run_experiment.py's getattr default) so CF-based ECS is
+    # comparable across all three datasets. Previously 0.8, which let an MNLI
+    # "counterfactual" rewrite 80% of the words — not minimal, not comparable.
   - name: "ag_news"
     huggingface_id: "fancyzhx/ag_news"
     split: "test"
     sample_size: 10
     labels: ["World", "Sports", "Business", "Sci/Tech"]
 
-# Models (single model for the pilot)
+# Models — three distinct, NON-ANTHROPIC Bedrock model families (Amazon, Qwen, DeepSeek),
+# run CONCURRENTLY per dataset (run_experiment.py fans the models out with asyncio.gather).
+# `name` is the study-facing label (drives output/checkpoint filenames and model-level
+# aggregates). `model_id` is the Bedrock invocation id for AWS_REGION=eu-north-1: Nova Pro
+# uses the EU cross-region inference profile (eu.* — requires an EU region); Qwen3 and
+# DeepSeek V3 are on-demand (bare id). Model access must be enabled for each in the Bedrock
+# console. Per-model context windows live in config/models.yaml.
+#
+# Anthropic (Claude) was dropped 2026-07-02: its access is blocked by an AWS Marketplace
+# subscription that cannot complete on this account (INVALID_PAYMENT_INSTRUMENT). Meta
+# Llama (no EU availability) and Mistral Large (absent from eu-north-1) are also
+# unavailable here, so the trio is Amazon Nova Pro, Qwen3-235B, and DeepSeek V3.
 models:
-  - name: "llama-3.3-70b-versatile"
-    model_id: "llama-3.3-70b-versatile"
+  - name: "nova-pro"
+    model_id: "eu.amazon.nova-pro-v1:0"
+  - name: "qwen3-235b"
+    model_id: "qwen.qwen3-235b-a22b-2507-v1:0"
+  - name: "deepseek-v3"
+    model_id: "deepseek.v3-v1:0"
 
 # Inference Settings
 inference:

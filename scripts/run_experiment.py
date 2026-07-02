@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.load.dataset_loader import DatasetLoader, Instance
 from src.inference.inference_engine import InferenceEngine
-from src.parsing.parser import Parser, dynamic_k
+from src.parsing.parser import Parser, dynamic_k, ensure_spacy_available
 from src.normalization.normalizer import Normalizer
 from src.metrics.metrics_calculator import MetricsCalculator
 from src.metrics.redaction_test import RedactionTest
@@ -29,7 +29,7 @@ from src.utils.data_models import (
 from src.utils.checkpoint_manager import CheckpointManager
 from src.utils.execution_summary import ExecutionSummary
 from src.utils.exceptions import (
-    APIError, RateLimitExhausted, DailyRateLimitExhausted, ParsingError, PromptValidationError,
+    APIError, RateLimitExhausted, ParsingError, PromptValidationError,
 )
 from src.utils.logging_config import setup_logging
 
@@ -474,6 +474,11 @@ async def process_instance(
 
         except (ParsingError, json.JSONDecodeError) as e:
             logger.warning(f"Parsing error for {instance_id} strategy {strat_id}: {e}")
+        except Exception as e:
+            # Safety net: an unexpected error in ONE strategy's parse must not discard the
+            # whole instance (and the other strategies' valid evidence + spent API tokens).
+            # Logged loudly (with traceback) so it is never silently masked.
+            logger.error(f"Unexpected error parsing {instance_id} strategy {strat_id}: {e}", exc_info=True)
 
     cf_flip_verified = parsed_flags.get("CF", False) and valid_flags.get("CF", False) and cf_flip_verified
     cf_counterfactual_text = parsed_tokens.get("CF_reconstructed", "")
@@ -700,7 +705,7 @@ async def process_instance(
             _acct(cr.usage)
             return parser.parse_classification(cr.raw_response, label_set)
 
-        rt = RedactionTest(redact_classify)
+        rt = RedactionTest(redact_classify, normalizer=normalizer)
         if h_ordered_tokens:
             try:
                 result.redaction_H = await rt.run(h_ordered_tokens, clean_text, predicted_label)
@@ -824,7 +829,7 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
         sampled_samples=sampling_log.sampled if sampling_log else 0,
         dropped_wrong_pred=sampling_log.wrong_predictions if sampling_log else 0,
         dropped_other=sampling_log.dropped_by_reason if sampling_log else {},
-        std_ecs=float(np.std(ecs_values)) if len(ecs_values) > 1 else 0.0,
+        std_ecs=float(np.std(ecs_values, ddof=1)) if len(ecs_values) > 1 else 0.0,
         median_ecs=float(np.median(ecs_values)) if ecs_values else 0.0,
         ecs_ci_lower=ecs_ci_lower,
         ecs_ci_upper=ecs_ci_upper,
@@ -873,7 +878,106 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
     )
 
 
+async def _run_model_on_dataset(model_config, instances, prompts, dataset_config,
+                                parser, normalizer, calc, config, output_dir):
+    """Run one model over every instance of one dataset and return a result bundle.
+
+    Isolated so the models configured for a run can execute concurrently
+    (asyncio.gather) rather than one after another — each call owns its engine,
+    checkpoint file, and result list and shares no mutable state with its siblings.
+    Instances within a model are processed in order; cross-model concurrency combined
+    with each engine's own request semaphore bounds the total in-flight Bedrock calls.
+    """
+    dataset_name = dataset_config.name
+    tag = f"{model_config.name}/{dataset_name}"
+    logger.info(f"Processing model: {model_config.name} on {dataset_name}")
+
+    engine = InferenceEngine(
+        model_name=model_config.model_id,
+        max_retries=config.inference.max_retries,
+        concurrent_requests=config.inference.concurrent_requests,
+        context_window=getattr(model_config, "context_window", 8192),
+    )
+
+    model_results: List[InstanceResult] = []
+    wrong_pred_count = 0
+    successful = 0
+    failed = 0
+    prompt_validation_failures = 0
+    cp = CheckpointManager(output_dir / f"checkpoint_{dataset_name}_{model_config.name}.jsonl")
+    last_checkpointed = 0
+
+    def _flush_checkpoint():
+        nonlocal last_checkpointed
+        new_results = model_results[last_checkpointed:]
+        if new_results:
+            cp.save_checkpoint([r.to_dict() for r in new_results])
+            last_checkpointed = len(model_results)
+
+    for i, instance in enumerate(instances):
+        logger.info(f"[{model_config.name}] Processing {instance.instance_id} ({i+1}/{len(instances)})")
+        try:
+            result = await process_instance(
+                instance, engine, parser, normalizer, calc, prompts, config, dataset_config
+            )
+            model_results.append(result)
+            successful += 1
+            if not result.correct:
+                wrong_pred_count += 1
+        except RateLimitExhausted as e:
+            logger.error(f"[{model_config.name}] Rate limit exhausted for {instance.instance_id}: {e}")
+            failed += 1
+            _flush_checkpoint()
+            logger.info(f"[{model_config.name}] Partial output saved ({last_checkpointed} instances) after rate limit.")
+            continue
+        except PromptValidationError as e:
+            logger.error(f"[{model_config.name}] Prompt validation failed for {instance.instance_id}: {e}")
+            prompt_validation_failures += 1
+            failed += 1
+            continue
+        except Exception as e:
+            logger.error(f"[{model_config.name}] Failed to process {instance.instance_id}: {e}")
+            failed += 1
+            continue
+
+        if (i + 1) % config.output.checkpoint_frequency == 0:
+            _flush_checkpoint()
+
+    # Cross-check: the engine's authoritative cumulative usage vs. the sum attributed
+    # to per-instance records. A divergence flags an uncounted call path.
+    engine_total = engine.total_prompt_tokens + engine.total_completion_tokens
+    instance_total = sum(r.prompt_tokens + r.response_tokens for r in model_results)
+    logger.info(f"Token usage for {tag}: engine={engine_total} "
+                f"(prompt={engine.total_prompt_tokens}, completion={engine.total_completion_tokens}), "
+                f"per-instance sum={instance_total}, truncated_calls={engine.n_truncated}")
+    if engine_total and abs(engine_total - instance_total) > 0.05 * engine_total:
+        logger.warning(f"Token attribution mismatch for {tag}: "
+                       f"engine={engine_total} vs per-instance={instance_total} — an API call path may be unaccounted.")
+
+    # Per-(model,dataset) aggregate uses THIS model's own sampling log, so its
+    # dropped_wrong_pred reflects only this model rather than a cross-model tally.
+    model_slog = SamplingLog(
+        dataset=dataset_name,
+        requested=dataset_config.sample_size,
+        sampled=len(instances),
+        wrong_predictions=wrong_pred_count,
+    )
+    agg = compute_aggregate_metrics(
+        model_results, "model_dataset", f"{model_config.name}_{dataset_name}", sampling_log=model_slog
+    )
+
+    return {
+        "results": model_results,
+        "agg": agg,
+        "wrong_pred_count": wrong_pred_count,
+        "successful": successful,
+        "failed": failed,
+        "prompt_validation_failures": prompt_validation_failures,
+    }
+
+
 async def run_experiment(config, args):
+    ensure_spacy_available()  # fail fast, before any API calls, if R extraction would silently degrade
     run_id = str(uuid.uuid4())[:8]
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_dir = Path(config.output.base_dir) / f"{timestamp}_{run_id}"
@@ -907,9 +1011,6 @@ async def run_experiment(config, args):
     all_results: List[InstanceResult] = []
     aggregate_list: List[AggregateMetrics] = []
     sampling_logs: List[SamplingLog] = []
-    # Set once a per-day quota is hit so we stop the run (every remaining call would
-    # hit the same wall) instead of futilely retrying through the rest of the matrix.
-    daily_limit_hit = False
 
     for dataset_config in config.datasets:
         dataset_name = dataset_config.name
@@ -951,102 +1052,40 @@ async def run_experiment(config, args):
             continue
 
         summary.total_instances += len(instances) * len(config.models)
+        # Prompts depend only on config + dataset, not the model, so build once and
+        # share (read-only) across the concurrent model runs.
+        prompts = create_prompt_map(config, dataset_name=dataset_name)
 
-        # Build sampling log for this dataset
-        slog = SamplingLog(
+        # Run every configured model on this dataset CONCURRENTLY ("at once"). Each
+        # model gets its own engine, checkpoint file, and result list, so the
+        # coroutines share no mutable state; asyncio.gather returns them in config
+        # order, keeping merged outputs deterministic regardless of finish order.
+        logger.info(f"Running {len(config.models)} models concurrently on {dataset_name}: "
+                    f"{', '.join(m.name for m in config.models)}")
+        model_bundles = await asyncio.gather(*[
+            _run_model_on_dataset(model_config, instances, prompts, dataset_config,
+                                  parser, normalizer, calc, config, output_dir)
+            for model_config in config.models
+        ])
+
+        # Merge the per-model bundles in config order.
+        dataset_wrong_pred = 0
+        for bundle in model_bundles:
+            all_results.extend(bundle["results"])
+            aggregate_list.append(bundle["agg"])
+            summary.successful_instances += bundle["successful"]
+            summary.failed_instances += bundle["failed"]
+            summary.prompt_validation_failures += bundle["prompt_validation_failures"]
+            dataset_wrong_pred += bundle["wrong_pred_count"]
+
+        # Dataset-level sampling log (wrong_predictions summed across all models),
+        # used for the dataset-level and overall aggregates below.
+        sampling_logs.append(SamplingLog(
             dataset=dataset_name,
             requested=dataset_config.sample_size,
             sampled=len(instances),
-        )
-
-        for model_config in config.models:
-            logger.info(f"Processing model: {model_config.name} on {dataset_name}")
-
-            engine = InferenceEngine(
-                model_name=model_config.model_id,
-                max_retries=config.inference.max_retries,
-                concurrent_requests=config.inference.concurrent_requests,
-                context_window=getattr(model_config, "context_window", 8192),
-            )
-
-            prompts = create_prompt_map(config, dataset_name=dataset_name)
-            model_results: List[InstanceResult] = []
-            wrong_pred_count = 0
-            cp = CheckpointManager(output_dir / f"checkpoint_{dataset_name}_{model_config.name}.jsonl")
-            last_checkpointed = 0
-
-            def _flush_checkpoint():
-                nonlocal last_checkpointed
-                new_results = model_results[last_checkpointed:]
-                if new_results:
-                    cp.save_checkpoint([r.to_dict() for r in new_results])
-                    last_checkpointed = len(model_results)
-
-            for i, instance in enumerate(instances):
-                logger.info(f"Processing {instance.instance_id} ({i+1}/{len(instances)})")
-                try:
-                    result = await process_instance(
-                        instance, engine, parser, normalizer, calc, prompts, config, dataset_config
-                    )
-                    model_results.append(result)
-                    summary.successful_instances += 1
-                    if not result.correct:
-                        wrong_pred_count += 1
-                except DailyRateLimitExhausted as e:
-                    logger.error(f"Daily rate limit reached at {instance.instance_id}: {e}")
-                    summary.failed_instances += 1
-                    _flush_checkpoint()
-                    logger.warning(
-                        f"Stopping run: the daily Groq quota is exhausted, so the remaining "
-                        f"instances and models cannot be processed today. Partial output saved "
-                        f"({last_checkpointed} instances)."
-                    )
-                    daily_limit_hit = True
-                    break
-                except RateLimitExhausted as e:
-                    logger.error(f"Rate limit exhausted for {instance.instance_id}: {e}")
-                    summary.failed_instances += 1
-                    _flush_checkpoint()
-                    logger.info(f"Partial output saved ({last_checkpointed} instances) after rate limit.")
-                    continue
-                except PromptValidationError as e:
-                    logger.error(f"Prompt validation failed for {instance.instance_id}: {e}")
-                    summary.prompt_validation_failures += 1
-                    summary.failed_instances += 1
-                    continue
-                except Exception as e:
-                    logger.error(f"Failed to process {instance.instance_id}: {e}")
-                    summary.failed_instances += 1
-                    continue
-
-                if (i + 1) % config.output.checkpoint_frequency == 0:
-                    _flush_checkpoint()
-
-            slog.wrong_predictions += wrong_pred_count
-            all_results.extend(model_results)
-
-            # Cross-check: the engine's authoritative cumulative usage vs. the sum
-            # attributed to per-instance records. A divergence flags an uncounted call path.
-            engine_total = engine.total_prompt_tokens + engine.total_completion_tokens
-            instance_total = sum(r.prompt_tokens + r.response_tokens for r in model_results)
-            logger.info(f"Token usage for {model_config.name}/{dataset_name}: "
-                        f"engine={engine_total} (prompt={engine.total_prompt_tokens}, "
-                        f"completion={engine.total_completion_tokens}), per-instance sum={instance_total}, "
-                        f"truncated_calls={engine.n_truncated}")
-            if engine_total and abs(engine_total - instance_total) > 0.05 * engine_total:
-                logger.warning(f"Token attribution mismatch for {model_config.name}/{dataset_name}: "
-                               f"engine={engine_total} vs per-instance={instance_total} — an API call path may be unaccounted.")
-
-            agg = compute_aggregate_metrics(model_results, "model_dataset", f"{model_config.name}_{dataset_name}", sampling_log=slog)
-            aggregate_list.append(agg)
-
-            if daily_limit_hit:
-                break  # stop remaining models — the daily quota is gone
-
-        sampling_logs.append(slog)
-
-        if daily_limit_hit:
-            break  # stop remaining datasets — the daily quota is gone
+            wrong_predictions=dataset_wrong_pred,
+        ))
 
     # Compute overall aggregate
     if all_results:

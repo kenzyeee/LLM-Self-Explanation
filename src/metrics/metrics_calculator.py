@@ -148,11 +148,16 @@ class MetricsCalculator:
 
     def compute_ecs_primary(self, pairwise_agreements: Dict[Tuple[str, str], float]) -> Tuple[Optional[float], Optional[float], int]:
         """Primary ECS as two composites:
-           - extraction_rationale: average of (H,R) and (RO,R) — extraction methods agreeing with rationale
-           - extraction_perturbation: average of (H,CF) and (RO,CF) — extraction methods agreeing with perturbation
+           - extraction_rationale: average of (H,R) and (R,RO) — extraction methods agreeing with rationale
+           - extraction_perturbation: average of (H,CF) and (CF,RO) — extraction methods agreeing with perturbation
+
+        Pair keys must match the ordering compute_pairwise_agreements stores them under
+        (index order within ["H","R","CF","RO"], i.e. ("R","RO") and ("CF","RO"), never
+        ("RO","R")/("RO","CF")) or the lookups silently miss and these composites collapse
+        to a single pair.
         """
-        er_pairs = [("H", "R"), ("RO", "R")]
-        ep_pairs = [("H", "CF"), ("RO", "CF")]
+        er_pairs = [("H", "R"), ("R", "RO")]
+        ep_pairs = [("H", "CF"), ("CF", "RO")]
         er_values = [pairwise_agreements.get(p) for p in er_pairs if pairwise_agreements.get(p) is not None]
         ep_values = [pairwise_agreements.get(p) for p in ep_pairs if pairwise_agreements.get(p) is not None]
         er_mean = float(np.mean(er_values)) if er_values else None

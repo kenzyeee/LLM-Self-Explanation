@@ -7,11 +7,11 @@ Investigates cross-strategy agreement among LLM self-explanations across four ex
 ```
 config/ ──► load ──► inference ──► parsing ──► normalization ──► metrics ──► validity ──► statistics ──► plots ──► paper
                               ▲                      ▲
-                         Groq API              NLTK / spaCy
+                       AWS Bedrock             NLTK / spaCy
 ```
 
 1. **Load** -- Download & balance datasets (SST-2, MNLI, AG News)
-2. **Inference** -- Query LLMs via Groq API for classification + 4 explanations
+2. **Inference** -- Query LLMs via AWS Bedrock (Converse API) for classification + 4 explanations; the 3 configured models run concurrently per dataset
 3. **Parse** -- Extract structured outputs from raw LLM responses
 4. **Normalize** -- Lowercase, strip punctuation, remove stopwords, lemmatize
 5. **Metrics** -- Compute Jaccard similarity, Kendall's tau, ECS, consensus cores
@@ -26,12 +26,23 @@ config/ ──► load ──► inference ──► parsing ──► normaliza
 pip install -r requirements.txt
 ```
 
-Set your Groq API key:
+Authenticate to Bedrock with a **Bedrock API key** (bearer token) — create one in the
+Bedrock console, then:
 
 ```bash
-set GROQ_API_KEY=gsk_your_key_here    # Windows
-export GROQ_API_KEY=gsk_your_key_here  # Linux/Mac
+set AWS_BEARER_TOKEN_BEDROCK=ABSK...     # Windows
+set AWS_REGION=us-east-1
+
+export AWS_BEARER_TOKEN_BEDROCK=ABSK...   # Linux/Mac
+export AWS_REGION=us-east-1
 ```
+
+Alternatively use standard AWS SigV4 credentials (`AWS_ACCESS_KEY_ID` +
+`AWS_SECRET_ACCESS_KEY`, `~/.aws/credentials`, or an IAM role). Either way, enable
+access to the three configured models (Amazon Nova Pro, Qwen3-235B, DeepSeek V3) for your
+account and region in the Bedrock console first. The default config targets `eu-north-1`,
+where Nova Pro uses the `eu.*` cross-region inference profile (requires an EU region) and
+Qwen3 / DeepSeek V3 are on-demand.
 
 The config in `config/experiment.yaml` is pre-configured for deterministic (T=0) inference across 3 models, 3 datasets, and 4 strategies.
 
@@ -41,8 +52,8 @@ The config in `config/experiment.yaml` is pre-configured for deterministic (T=0)
 # Run the full experiment pipeline
 python scripts/run_experiment.py
 
-# Run with overrides
-python scripts/run_experiment.py --models llama-3.1-8b --sample-size 50 --force-restart
+# Run with overrides (--models selects a subset of the configured models by name)
+python scripts/run_experiment.py --models nova-pro deepseek-v3 --sample-size 50 --force-restart
 
 # Ablation studies
 python scripts/run_ablations.py --variants prompt normalization --k-values 2 3
@@ -61,14 +72,13 @@ See `python scripts/run_experiment.py --help` for all CLI options.
 
 ```
 ├── config/              YAML configuration files
-│   ├── experiment.yaml  Main experiment config
+│   ├── experiment.yaml  Main experiment config (normalization lives inline here)
 │   ├── datasets.yaml    Dataset-specific overrides
-│   ├── models.yaml      Model-specific overrides
-│   └── normalization.yaml  Normalization variants
+│   └── models.yaml      Model-specific overrides
 ├── prompts/             9 prompt templates (*.txt)
 ├── src/
 │   ├── load/            Dataset loading & balanced sampling
-│   ├── inference/       Groq API inference engine
+│   ├── inference/       AWS Bedrock inference engine
 │   ├── parsing/         Response parsers (5 formats)
 │   ├── normalization/   Token normalization
 │   ├── metrics/         ECS, Jaccard, Kendall, consensus cores + validity
