@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from .config import (
-    AblationsConfig, Config, DatasetConfig, ExperimentConfig,
+    AblationsConfig, Config, ConfidenceConfig, DatasetConfig, ExperimentConfig,
     ExplanationStrategyConfig, InferenceConfig, MetricsConfig,
     ModelConfig, NormalizationConfig, OutputConfig,
     ReproducibilityConfig, ValidityConfig,
@@ -84,6 +84,7 @@ def _parse_config(data: Dict[str, Any]) -> Config:
     models = [ModelConfig(**m) for m in data.get("models", [])]
     inference = InferenceConfig(**data.get("inference", {}))
     strategies = [ExplanationStrategyConfig(**s) for s in data.get("explanation_strategies", [])]
+    confidence = ConfidenceConfig(**data.get("confidence", {}))
     normalization = NormalizationConfig(**data.get("normalization", {}))
     metrics = MetricsConfig(**data.get("metrics", {}))
     validity = ValidityConfig(**data.get("validity", {}))
@@ -94,6 +95,7 @@ def _parse_config(data: Dict[str, Any]) -> Config:
     return Config(
         experiment=experiment, datasets=datasets, models=models,
         inference=inference, explanation_strategies=strategies,
+        confidence=confidence,
         normalization=normalization, metrics=metrics, validity=validity,
         ablations=ablations, output=output, reproducibility=reproducibility,
     )
@@ -107,6 +109,7 @@ class ConfigValidator:
         self._validate_models(config.models)
         self._validate_inference(config.inference)
         self._validate_explanation_strategies(config.explanation_strategies)
+        self._validate_confidence(config.confidence)
         self._validate_normalization(config.normalization)
         self._validate_metrics(config.metrics)
         self._validate_validity(config.validity)
@@ -181,11 +184,26 @@ class ConfigValidator:
                 raise ConfigurationError(f"Strategy {strategy.id}: name is required")
             if not strategy.prompt_file:
                 raise ConfigurationError(f"Strategy {strategy.id}: prompt_file is required")
+            # prompt_file must be the EXECUTED elicitation prompt: dataset-specific and
+            # multiclass variants are derived from it by replacing the "_explain.txt"
+            # suffix, and the provenance manifest records it as what ran. A non-_explain
+            # name here is exactly the snapshot/provenance mislabel of review §1.3/§8.
+            if not strategy.prompt_file.endswith("_explain.txt"):
+                raise ConfigurationError(
+                    f"Strategy {strategy.id}: prompt_file must name the executed "
+                    f"'*_explain.txt' prompt, got: {strategy.prompt_file}")
             prompt_path = Path(strategy.prompt_file)
             if not prompt_path.exists():
                 raise ConfigurationError(f"Strategy {strategy.id}: prompt file not found: {prompt_path}")
             if strategy.id in ("H", "RO") and (strategy.n_tokens is None or strategy.n_tokens <= 0):
                 raise ConfigurationError(f"Strategy {strategy.id}: n_tokens must be positive")
+
+    def _validate_confidence(self, confidence: ConfidenceConfig) -> None:
+        if confidence.enabled:
+            if not confidence.prompt_file:
+                raise ConfigurationError("confidence.prompt_file is required when confidence is enabled")
+            if not Path(confidence.prompt_file).exists():
+                raise ConfigurationError(f"Confidence prompt file not found: {confidence.prompt_file}")
 
     def _validate_normalization(self, norm: NormalizationConfig) -> None:
         if not norm.version:
@@ -200,6 +218,10 @@ class ConfigValidator:
             raise ConfigurationError("permutation_tests must be positive")
         if not (0.0 < metrics.confidence_level < 1.0):
             raise ConfigurationError(f"confidence_level must be in range (0.0, 1.0), got {metrics.confidence_level}")
+        if metrics.correction not in ("holm", "none"):
+            raise ConfigurationError(f"correction must be 'holm' or 'none', got '{metrics.correction}'")
+        if metrics.min_n_for_test < 2:
+            raise ConfigurationError("min_n_for_test must be >= 2 (a test below n=2 is undefined)")
 
     def _validate_validity(self, validity: ValidityConfig) -> None:
         if not validity.masking_token:
@@ -210,11 +232,6 @@ class ConfigValidator:
     def _validate_ablations(self, ablations: AblationsConfig) -> None:
         if ablations.subset_size <= 0:
             raise ConfigurationError("Ablation subset_size must be positive")
-        if not ablations.highlighting_k_values:
-            raise ConfigurationError("highlighting_k_values cannot be empty")
-        for k in ablations.highlighting_k_values:
-            if k <= 0:
-                raise ConfigurationError(f"All k values must be positive, got {k}")
 
     def _validate_output(self, output: OutputConfig) -> None:
         if not output.base_dir:

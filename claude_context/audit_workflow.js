@@ -13,8 +13,8 @@ export const meta = {
 
 const CONTEXT = [
   'PROJECT: An empirical study of CROSS-STRATEGY AGREEMENT among LLM self-explanations.',
-  'A single LLM (llama-3.3-70b-versatile, via Groq, temperature=0, ONE sample per call)',
-  'classifies a text, then is asked to explain that SAME prediction four ways:',
+  'THREE LLM families (Nova Pro, Qwen3-235B, DeepSeek V3 via AWS Bedrock, temperature=0, ONE sample per call)',
+  'each classify a text, then are asked to explain their SAME prediction four ways:',
   '  H  = Highlighting (per-word salience 1-10, top-k by dynamic_k)',
   '  R  = Rationale (one free-text sentence -> content-word lemmas anchored to input)',
   '  CF = Counterfactual (minimal edit that flips the label, MiCE-style; changed input tokens = evidence)',
@@ -37,7 +37,6 @@ const CONTEXT = [
   '  scripts/run_validity_tests.py    (erasure pass)',
   '  src/metrics/metrics_calculator.py (Jaccard/overlap/Kendall/RBO/ECS/random-baseline/consensus-core)',
   '  src/metrics/redaction_test.py     (progressive comprehensiveness erasure: faithfulness=1-k/n)',
-  '  src/metrics/validity_checker.py   (CC removal vs random removal)',
   '  src/parsing/parser.py             (token extraction for H/R/CF/RO, dynamic_k, CF difflib)',
   '  src/normalization/normalizer.py   (lemmatization, is_anchored)',
   '  src/statistics/statistical_tests.py (bootstrap, permutation, wilcoxon, paired-t, bonferroni)',

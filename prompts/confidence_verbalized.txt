@@ -1,0 +1,8 @@
+The text was classified as: {predicted_label}
+
+Text: "{input_text}"
+
+State how confident you are that this classification is correct, as a probability from 0 (certainly wrong) to 100 (certainly correct). Give your actual estimate, not a hedge toward 50.
+
+Return only valid JSON:
+{{"confidence": <0-100>}}

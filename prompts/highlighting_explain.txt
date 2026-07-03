@@ -2,7 +2,7 @@ The text was classified as: {predicted_label}
 
 Text: "{input_text}"
 
-Analyze the importance of each word for this classification. Give every word an importance score from 1 (irrelevant) to 10 (decisive), using each word exactly as it appears in the text.
+Analyze the importance of each word for this classification. Give every word an importance score from 1 (irrelevant) to 10 (decisive), using each word exactly as it appears in the text, in order. Include every occurrence, even repeated words.
 
 Return only valid JSON:
-{{"salience": {{"word": score, ...}}}}
+{{"salience": [["word", score], ["word", score], ...]}}

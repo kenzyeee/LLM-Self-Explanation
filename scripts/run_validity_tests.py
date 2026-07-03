@@ -1,21 +1,34 @@
-"""Erasure / faithfulness pass — the SEPARATE consistency axis.
+"""Erasure pass — the SEPARATE second consistency axis.
 
-This is the canonical erasure anchor for the study. It is deliberately a
+This is the canonical erasure instrument for the study. It is deliberately a
 *separate, post-hoc* pass over a completed collection run (instance_results.jsonl),
-embodying the framing that faithfulness is an independently-validated quantity —
-NOT ground truth, but a second behavioural consistency axis (stated-vs-revealed
-input sensitivity, in the spirit of ERASER comprehensiveness; DeYoung et al. 2020).
+embodying the framing that erasure behaviour is an independently-measured quantity —
+NOT ground truth and NOT "faithfulness", but a second behavioural consistency axis
+(stated-vs-revealed input sensitivity, in the spirit of ERASER comprehensiveness;
+DeYoung et al. 2020 — with the OOD caveats of Bastings & Filippova 2020 / Hooker et
+al. 2019 acknowledged).
+
+Every record is re-classified by the SAME model that produced its original
+prediction (grouped by the record's `model` field; one engine per model). Erasing
+with a different model would measure cross-model transfer, not the within-model
+stated-vs-revealed sensitivity the construct requires (review §8.1).
 
 For each instance it measures, relative to the model's OWN prediction:
   * Per-strategy erasure: erase a strategy's evidence token set, does the
     prediction flip? Run for H, R, CF, RO under BOTH operators (mask, delete).
   * Consensus-Core erasure: erase CC3 / CC4 token sets under both operators.
-  * Random control: erase a same-size random token set, AVERAGED over
-    n_random_baseline_trials, under both operators.
+  * Random control: erase a same-size random CONTENT-word token set, AVERAGED
+    over n_random_baseline_trials, under both operators.
+  * Held-out CF flip verification (optional, config validity.heldout_cf_verification):
+    re-classify each self-verified counterfactual with a DIFFERENT configured model —
+    a judge-choice robustness check (arXiv:2505.13972). The construct-defining flip
+    stays self-verified.
 
 The headline result is CC-erasure flip rate MINUS random-erasure flip rate,
-bucketed by ECS-lift tier: does cross-strategy consensus localize causally
-important tokens better than chance, and does the gap grow with agreement?
+bucketed by ECS-lift tier — with the pre-registered test family (b): a one-sided
+sign-flip permutation test on the per-instance paired differences
+(cc3_flip − random_rate), per model per operator, Holm-corrected within each
+model's operator family. Everything else is descriptive.
 
 Usage:
     python scripts/run_validity_tests.py                       # latest run, both operators
@@ -38,6 +51,7 @@ import numpy as np
 from src.inference.inference_engine import InferenceEngine
 from src.normalization.normalizer import Normalizer
 from src.parsing.parser import Parser
+from src.statistics.statistical_tests import sign_flip_permutation_test, holm_correction
 from src.utils.config_loader import load_and_validate_config, parse_command_line_args
 from src.utils.logging_config import setup_logging
 
@@ -149,7 +163,8 @@ def _ro_tokens(data: Dict[str, Any]) -> List[str]:
 
 async def process_instance_erasure(data, engine, parser, class_prompt, label_set,
                                    operators, trials, seed,
-                                   normalizer: Optional[Normalizer] = None) -> Dict[str, Any]:
+                                   normalizer: Optional[Normalizer] = None,
+                                   heldout_engine: Optional[InferenceEngine] = None) -> Dict[str, Any]:
     text = data["text"]
     original = data.get("predicted_label", "")
     strat_sets = {
@@ -194,6 +209,16 @@ async def process_instance_erasure(data, engine, parser, class_prompt, label_set
     for op in operators:
         rec["random_cc3"][f"{op}_rate"] = await random_flip_rate(
             engine, parser, class_prompt, text, n_random, op, label_set, original, trials, seed, normalizer)
+
+    # Held-out CF flip verification (judge-choice robustness, arXiv:2505.13972):
+    # does a DIFFERENT model also classify the self-verified counterfactual away
+    # from the original label? None = not applicable / unparseable.
+    rec["cf_flip_heldout"] = None
+    cf_text = data.get("cf_counterfactual_text", "")
+    if heldout_engine is not None and cf_text and data.get("cf_flip_verified"):
+        pred = await classify(heldout_engine, parser, class_prompt, cf_text, label_set)
+        rec["cf_flip_heldout"] = (pred != original) if pred else None
+        rec["cf_heldout_model"] = heldout_engine.model_name
     return rec
 
 
@@ -217,7 +242,21 @@ def _tier(lift: Optional[float], lo: float, hi: float) -> Optional[str]:
     return "high"
 
 
-def aggregate(records: List[Dict[str, Any]], operators: List[str]) -> Dict[str, Any]:
+def _paired_cc_random_diffs(records: List[Dict[str, Any]], op: str) -> List[float]:
+    """Per-instance paired differences (cc3_flip − random_rate) for one operator.
+    Pairing is within-instance; instances missing either side are excluded."""
+    diffs = []
+    for r in records:
+        cc = r.get("cc3", {}).get(op)
+        rnd = r.get("random_cc3", {}).get(f"{op}_rate")
+        if cc is not None and rnd is not None:
+            diffs.append((1.0 if cc else 0.0) - rnd)
+    return diffs
+
+
+def aggregate(records: List[Dict[str, Any]], operators: List[str],
+              n_permutations: int = 10000, min_n_for_test: int = 6,
+              seed: int = 42) -> Dict[str, Any]:
     overall: Dict[str, Any] = {"n": len(records), "operators": operators, "strategy_flip_rate": {}}
     for s in ["H", "R", "CF", "RO"]:
         overall["strategy_flip_rate"][s] = {
@@ -232,7 +271,32 @@ def aggregate(records: List[Dict[str, Any]], operators: List[str]) -> Dict[str, 
         rnd = overall["random_flip_rate"][op]
         overall["cc3_minus_random"][op] = (cc - rnd) if (cc is not None and rnd is not None) else None
 
-    # ECS-lift tiers (tertiles over available lifts)
+    # Held-out CF verification rate (robustness; construct-defining flip is self-verified).
+    heldout_vals = [r.get("cf_flip_heldout") for r in records]
+    overall["cf_flip_heldout_rate"] = _rate(heldout_vals)
+    overall["n_cf_heldout_checked"] = sum(1 for v in heldout_vals if v is not None)
+
+    # Pre-registered test family (b): CC3-erasure vs random control, per operator.
+    # One-sided sign-flip permutation on within-instance paired differences; Holm
+    # across the operator family. Below min_n_for_test: estimate only, no p.
+    raw_ps: List[Optional[float]] = []
+    diffs_by_op = {}
+    for op in operators:
+        diffs = _paired_cc_random_diffs(records, op)
+        diffs_by_op[op] = diffs
+        if len(diffs) >= min_n_for_test:
+            raw_ps.append(sign_flip_permutation_test(diffs, n_permutations=n_permutations,
+                                                     seed=seed, alternative="greater"))
+        else:
+            raw_ps.append(None)
+    adj_ps = holm_correction(raw_ps)
+    overall["cc3_vs_random_test"] = {
+        op: {"n_paired": len(diffs_by_op[op]), "p_raw": raw_ps[i], "p_holm": adj_ps[i]}
+        for i, op in enumerate(operators)
+    }
+
+    # ECS-lift tiers (tertiles over available lifts) — DESCRIPTIVE ONLY: tertile
+    # thresholds are data-dependent and no trend test is applied.
     lifts = sorted(r["ecs_lift"] for r in records if r.get("ecs_lift") is not None)
     by_tier: Dict[str, Any] = {}
     if len(lifts) >= 3:
@@ -279,11 +343,48 @@ async def run(config, args):
     operators = list(config.validity.erasure_operators)
     trials = args.trials if args.trials else config.validity.n_random_baseline_trials
 
-    engine = InferenceEngine(
-        model_name=config.models[0].model_id,
-        max_retries=config.inference.max_retries,
-        concurrent_requests=config.inference.concurrent_requests,
-    )
+    # Group records by the model that produced them. Erasure re-classification MUST
+    # use the SAME model as the original prediction (stated-vs-revealed sensitivity
+    # of ONE model); re-classifying with config.models[0] for every record measured
+    # cross-model transfer for 2/3 of a multi-model run (review §8.1). Unknown model
+    # ids are a hard error — silently substituting a model would corrupt the axis.
+    configured_ids = {m.model_id for m in config.models}
+    by_model: Dict[str, List[Dict[str, Any]]] = {}
+    for data in instances:
+        mid = data.get("model", "")
+        by_model.setdefault(mid, []).append(data)
+    unknown = sorted(set(by_model) - configured_ids)
+    if unknown:
+        raise RuntimeError(
+            f"instance_results.jsonl contains records from model(s) not in the current "
+            f"config: {unknown}. Erasure must re-classify with the SAME model that made "
+            f"each prediction — add the model(s) back to config/experiment.yaml or run "
+            f"against a matching results file.")
+
+    engines: Dict[str, InferenceEngine] = {
+        mid: InferenceEngine(
+            model_name=mid,
+            max_retries=config.inference.max_retries,
+            concurrent_requests=config.inference.concurrent_requests,
+        ) for mid in by_model
+    }
+
+    # Held-out CF judge: the next DIFFERENT model in config order (round-robin).
+    # Only available when >=2 models are configured.
+    heldout_for: Dict[str, Optional[InferenceEngine]] = {}
+    use_heldout = getattr(config.validity, "heldout_cf_verification", False)
+    ordered_ids = [m.model_id for m in config.models]
+    for mid in by_model:
+        heldout_for[mid] = None
+        if use_heldout and len(ordered_ids) >= 2 and mid in ordered_ids:
+            nxt = ordered_ids[(ordered_ids.index(mid) + 1) % len(ordered_ids)]
+            if nxt != mid:
+                heldout_for[mid] = engines.get(nxt) or InferenceEngine(
+                    model_name=nxt,
+                    max_retries=config.inference.max_retries,
+                    concurrent_requests=config.inference.concurrent_requests,
+                )
+
     parser = Parser()
     # Mirror the live collection run's normalization settings so erasure matches
     # evidence tokens the same way they were anchored to the input during extraction.
@@ -304,35 +405,65 @@ async def run(config, args):
         return prompt_cache[ds]
 
     records = []
-    for i, data in enumerate(instances):
-        ds = data.get("dataset", "")
-        ds_cfg = config.get_dataset_by_name(ds)
-        label_set = ds_cfg.labels if ds_cfg else ["positive", "negative"]
-        rec = await process_instance_erasure(
-            data, engine, parser, class_prompt_for(ds), label_set,
-            operators, trials, seed=config.experiment.seed + i, normalizer=normalizer)
-        records.append(rec)
-        logger.info(f"[{i+1}/{len(instances)}] {rec['instance_id']} erasure done")
+    i_global = 0
+    for mid in ordered_ids:
+        model_records = by_model.get(mid, [])
+        if not model_records:
+            continue
+        engine = engines[mid]
+        logger.info(f"Erasure: {len(model_records)} record(s) re-classified by their own model {mid}")
+        for data in model_records:
+            ds = data.get("dataset", "")
+            ds_cfg = config.get_dataset_by_name(ds)
+            label_set = ds_cfg.labels if ds_cfg else ["positive", "negative"]
+            rec = await process_instance_erasure(
+                data, engine, parser, class_prompt_for(ds), label_set,
+                operators, trials, seed=config.experiment.seed + i_global,
+                normalizer=normalizer, heldout_engine=heldout_for.get(mid))
+            records.append(rec)
+            i_global += 1
+            logger.info(f"[{i_global}/{len(instances)}] {rec['instance_id']} ({mid}) erasure done")
 
     with open(out_dir / "erasure_instances.jsonl", "w", encoding="utf-8") as f:
         for r in records:
             f.write(json.dumps(r) + "\n")
-    agg = aggregate(records, operators)
+
+    n_perms = getattr(config.metrics, "permutation_tests", 10000)
+    min_n = getattr(config.metrics, "min_n_for_test", 6)
+    # Per-model aggregates (primary reporting unit) + pooled overall (descriptive).
+    agg: Dict[str, Any] = {"per_model": {}, "pooled": None}
+    for mid in sorted(by_model):
+        model_recs = [r for r in records if r["model"] == mid]
+        if model_recs:
+            agg["per_model"][mid] = aggregate(model_recs, operators, n_permutations=n_perms,
+                                              min_n_for_test=min_n, seed=config.experiment.seed)
+    agg["pooled"] = aggregate(records, operators, n_permutations=n_perms,
+                              min_n_for_test=min_n, seed=config.experiment.seed)
+    agg["_notes"] = (
+        "Second consistency axis (stated-vs-revealed input sensitivity), NOT faithfulness "
+        "ground truth. Each record re-classified by its OWN model. per_model is the primary "
+        "reporting unit; pooled mixes models/datasets and is descriptive. cc3_vs_random_test "
+        "is the pre-registered family (b): one-sided sign-flip permutation on within-instance "
+        "paired differences, Holm-corrected across operators. ECS-lift tiers are descriptive "
+        "(data-dependent tertiles, no trend test)."
+    )
     with open(out_dir / "aggregate_erasure.json", "w", encoding="utf-8") as f:
         json.dump(agg, f, indent=2)
 
     logger.info(f"Erasure pass complete -> {out_dir / 'aggregate_erasure.json'}")
-    o = agg["overall"]
-    for op in operators:
-        logger.info(f"[{op}] CC3 flip={o['cc3_flip_rate'][op]} random={o['random_flip_rate'][op]} "
-                    f"gap={o['cc3_minus_random'][op]}")
+    for mid, a in agg["per_model"].items():
+        o = a["overall"]
+        for op in operators:
+            t = o["cc3_vs_random_test"][op]
+            logger.info(f"[{mid}][{op}] CC3 flip={o['cc3_flip_rate'][op]} random={o['random_flip_rate'][op]} "
+                        f"gap={o['cc3_minus_random'][op]} p_holm={t['p_holm']}")
     return records, agg
 
 
 def main():
     from dotenv import load_dotenv
     load_dotenv()
-    p = argparse.ArgumentParser(description="Erasure / faithfulness pass")
+    p = argparse.ArgumentParser(description="Erasure pass (second consistency axis)")
     p.add_argument("--results-dir", type=str, help="Run dir or instance_results.jsonl path")
     p.add_argument("--max-instances", type=int, help="Process only the first N instances (cheap smoke)")
     p.add_argument("--trials", type=int, help="Random-control draws (overrides config n_random_baseline_trials)")

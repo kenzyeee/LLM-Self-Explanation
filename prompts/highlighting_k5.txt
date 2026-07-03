@@ -1,6 +1,0 @@
-The text was classified as: {predicted_label}
-
-Identify the 5 most important single tokens (words) from the input text that support this classification. List them in order of importance.
-
-Return only valid JSON — each token must be copied verbatim from the input text:
-{{"highlights":["token1","token2","token3","token4","token5"]}}

@@ -2,7 +2,7 @@ The text was classified as: {predicted_label}
 
 Text: "{input_text}"
 
-Edit the text so that it is classified as {other_labels_quoted} instead. Make as few edits as possible.
+Edit the text so that it is classified as {other_labels_quoted} instead. Make as few edits as possible — change at most a third of the words, and do not add new sentences.
 
-Return only valid JSON:
+Return only valid JSON (exactly one JSON object, one rewrite):
 {{"rewritten": "<edited text>", "new_prediction": "<one of: {other_labels}>"}}

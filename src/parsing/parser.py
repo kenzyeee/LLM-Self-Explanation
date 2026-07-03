@@ -6,7 +6,7 @@ import string
 from typing import Tuple, List, Optional, Set
 
 from src.utils.exceptions import ParsingError
-from src.normalization.normalizer import DISCOURSE_WORDS
+from src.normalization.normalizer import DISCOURSE_WORDS, POLARITY_WORDS
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,9 @@ def dynamic_k(input_text: str, cap: Optional[int] = None) -> int:
         k = min(k, cap)
     return k
 
-POLARITY_WORDS = {"no", "not", "never", "nor", "neither", "none", "nobody", "nothing", "nowhere"}
+# POLARITY_WORDS is imported from normalizer.py — ONE whitelist shared by every
+# evidence path (H, R, CF, RO). A divergent local copy is exactly the asymmetry that
+# silently dropped contracted negations from 3 of 4 strategies (review §8.4).
 STOPWORDS = set()
 try:
     from nltk.corpus import stopwords
@@ -108,11 +110,46 @@ class Parser:
             raise ParsingError(f"Label '{label}' not in allowed set: {label_set}")
         return label
 
+    def parse_confidence(self, raw_response: str) -> float:
+        """Parse a verbalized-confidence response into a probability in [0, 1].
+
+        Expected format: {"confidence": <0-100>}. Verbalized numerical confidence is
+        the standard no-logprob elicitation (Tian et al. 2023, "Just Ask for
+        Calibration"; Xiong et al. 2024, ICLR) — Bedrock's Converse API exposes no
+        token logprobs, so this is the only confidence signal available API-only.
+        Values are accepted on either a 0-100 or 0-1 scale (a value <= 1 is treated
+        as already being a probability) and clamped to [0, 1].
+        """
+        text = raw_response.strip()
+        obj = self._extract_json(text)
+        if obj is None:
+            raise ParsingError("No valid JSON found in confidence response")
+        value = obj.get("confidence")
+        if isinstance(value, str):
+            try:
+                value = float(value.strip().rstrip("%"))
+            except ValueError:
+                raise ParsingError(f"Confidence '{value}' is not numeric")
+        if not isinstance(value, (int, float)):
+            raise ParsingError(f"Confidence must be numeric, got {type(value).__name__}")
+        conf = float(value)
+        if conf < 0:
+            raise ParsingError(f"Confidence {conf} is negative")
+        if conf > 1.0:
+            conf = conf / 100.0
+        return max(0.0, min(1.0, conf))
+
     def parse_highlighting(self, raw_response: str, input_text: str, normalizer, skip_validation: bool = False) -> List[str]:
         """Parse graded salience response.
 
-        Expected format:
-          {"salience": {"word1": score, "word2": score, ...}}
+        Accepted formats (the prompt asks for the list-of-pairs form; the dict form is
+        accepted for robustness because models sometimes emit it):
+          {"salience": [["word1", score], ["word2", score], ...]}   (canonical)
+          {"salience": {"word1": score, "word2": score, ...}}       (legacy/fallback)
+        A JSON object cannot represent the same word twice (duplicate keys silently
+        collapse to the last one — review §8.6d), which is why the canonical schema is
+        a list of pairs; repeated words are aggregated by MAX score (the importance of
+        a word type = its most important occurrence).
 
         Selection method (deterministic):
           1. Keep entries whose key is a single word, scores >= 1, that anchor in the
@@ -120,22 +157,41 @@ class Parser:
              ".") are dropped silently — they are noise, not evidence.
           2. Restrict to *content* tokens: anything the normalizer would discard
              (stopwords, discourse/label words, punctuation) is removed BEFORE ranking,
-             while polarity words ("no", "not") are retained. This is what previously
-             made H sets erratically small — top-scored stopwords ("very", "too") were
-             selected and only dropped during later normalization.
-          3. Sort by salience (descending) and return the length-proportional top-k
-             (dynamic_k). The returned ranked top-k list is reused by the caller for the
-             downstream Kendall τ / RBO comparison with RO.
+             while polarity words (incl. contracted negations) are retained.
+          3. Rank by NORMALIZED token (the same canonical token space every other
+             strategy's evidence lives in — review §8.2/§8.6b), deduplicated by max
+             score, sort by salience (descending) and return the length-proportional
+             top-k (dynamic_k). The returned ranked top-k list is reused by the caller
+             for the downstream Kendall τ / RBO comparison with RO, so it MUST be in
+             the same normalized space as the RO ranking.
+
+        Full normalized salience weights are exposed on ``self._h_salience_weights``
+        (dict normalized_token -> max score over the whole input) for the
+        salience-weighted random baseline.
         """
+        self._h_salience_weights: dict = {}
         text = raw_response.strip()
         obj = self._extract_json(text)
         if obj is None:
             raise ParsingError("No valid JSON found in highlighting response")
-        salience = obj.get("salience", {})
-        if not isinstance(salience, dict) or not salience:
-            raise ParsingError("Salience must be a non-empty dict of word -> score")
-        scored = []
-        for word, score in salience.items():
+        salience = obj.get("salience")
+        if isinstance(salience, dict):
+            entries = list(salience.items())
+        elif isinstance(salience, list):
+            entries = []
+            for item in salience:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    entries.append((item[0], item[1]))
+                elif isinstance(item, dict) and len(item) == 1:
+                    entries.append(next(iter(item.items())))
+        else:
+            entries = []
+        if not entries:
+            raise ParsingError("Salience must be a non-empty list of [word, score] pairs or a word->score dict")
+        # Aggregate by NORMALIZED token, max score. This is both the duplicate-handling
+        # rule and the projection into the canonical token space.
+        norm_scored: dict = {}
+        for word, score in entries:
             if not isinstance(word, str) or not word.strip():
                 continue
             if not isinstance(score, (int, float)) or score < 1:
@@ -149,18 +205,18 @@ class Parser:
             if not skip_validation and not normalizer.is_anchored(word, input_text):
                 logger.warning(f"H salience word '{word}' not anchored — discarding")
                 continue
-            # Restrict ranking to content tokens (keepable under normalization). This
-            # keeps polarity words but removes stopwords/discourse words so the top-k
-            # are stable, content-bearing evidence rather than padding.
-            if normalizer.normalize(word) is None:
+            norm = normalizer.normalize(word)
+            if norm is None:
                 continue
-            scored.append((word, float(score)))
-        if len(scored) < 2:
-            raise ParsingError(f"Only {len(scored)} valid content salience entries (need >=2)")
-        # Sort descending by score, then return the length-proportional top-k.
-        scored.sort(key=lambda x: -x[1])
-        k = dynamic_k(input_text, cap=len(scored))
-        return [w for w, _ in scored[:k]]
+            norm_scored[norm] = max(norm_scored.get(norm, 0.0), float(score))
+        if len(norm_scored) < 2:
+            raise ParsingError(f"Only {len(norm_scored)} valid content salience entries (need >=2)")
+        self._h_salience_weights = dict(norm_scored)
+        # Sort descending by score (normalized-token ties broken alphabetically for
+        # determinism), then return the length-proportional top-k.
+        ranked = sorted(norm_scored.items(), key=lambda x: (-x[1], x[0]))
+        k = dynamic_k(input_text, cap=len(ranked))
+        return [w for w, _ in ranked[:k]]
 
     def parse_rationale(self, raw_response: str, input_text: str, normalizer, skip_validation: bool = False) -> Tuple[str, List[str]]:
         # Reset per-call; populated with rationale concepts that have NO input
@@ -199,13 +255,21 @@ class Parser:
             compound_lower = compound.lower()
             if normalizer.is_anchored(compound_lower, input_text):
                 hyphenated_matches.add(compound_lower)
-        # Step 2: POS-tag the rationale and keep open-class content-word lemmas
+        # Step 2: POS-tag the rationale and keep open-class content-word lemmas.
+        # Polarity words (incl. contracted negations) are ALSO kept, regardless of
+        # POS — H and RO retain them via the normalizer's polarity whitelist, so R
+        # excluding them was an evidence-space asymmetry (review §8.4) that broke
+        # cross-strategy comparability precisely on negation-driven (NLI) instances.
         doc = nlp(rationale)
         content_tokens = set()
         for token in doc:
+            lower = token.lower_.strip()
+            lemma = token.lemma_.lower().strip()
+            if lower in POLARITY_WORDS or lemma in POLARITY_WORDS:
+                content_tokens.add(lower if lower in POLARITY_WORDS else lemma)
+                continue
             if token.pos_ in CONTENT_POS:
-                lemma = token.lemma_.lower().strip()
-                if (lemma and lemma not in STOPWORDS and lemma not in POLARITY_WORDS
+                if (lemma and lemma not in STOPWORDS
                         and lemma not in DISCOURSE_WORDS and len(lemma) > 1):
                     content_tokens.add(lemma)
         if not content_tokens:
@@ -236,17 +300,42 @@ class Parser:
             raise ParsingError("No evidence tokens could be extracted from rationale (all unanchored)")
         return rationale, anchored
 
+    @staticmethod
+    def _split_on_marker(text: str, marker: str) -> Tuple[str, str]:
+        """Split into (prefix_through_marker, editable_span_after_marker) at the FIRST
+        occurrence of `marker`. Returns (text, "") when the marker is absent."""
+        idx = text.find(marker)
+        if idx < 0:
+            return text, ""
+        cut = idx + len(marker)
+        return text[:cut], text[cut:]
+
+    @staticmethod
+    def _collapse_ws(s: str) -> str:
+        return " ".join(s.split()).strip().casefold()
+
     def parse_counterfactual(self, raw_response: str, input_text: str,
                              original_label: str, label_set: List[str],
                              normalizer, skip_validation: bool = False,
-                             max_edit_ratio: float = 0.3) -> Tuple[str, str, Set[str]]:
+                             max_edit_ratio: float = 0.3,
+                             edit_span_marker: Optional[str] = None) -> Tuple[str, str, Set[str]]:
         """Parse rewrite-based CF response via difflib.
 
         Expected format:
           {"rewritten": "<full rewritten text>", "new_prediction": "<target label>"}
 
         Returns (rewritten_text, new_prediction, from_tokens).
-        from_tokens are the original words that differ between input_text and rewritten.
+        from_tokens are the original SURFACE words that differ between input_text and
+        rewritten (raw edit attribution — the caller normalizes them into the shared
+        evidence token space before any cross-strategy comparison).
+
+        edit_span_marker: when the prompt restricts edits to a span (MNLI: "edit only
+        the Hypothesis"), pass the marker ("Hypothesis:"). Then (a) the text before
+        and including the marker must be unchanged (whitespace/case-insensitive) —
+        an edited Premise is a rules violation; and (b) the minimal-edit ratio is
+        computed over the EDITABLE span only. Without this, the effective cap on a
+        hypothesis-only edit varies with premise length (review §8.6c): a fully
+        legitimate minimal hypothesis edit auto-fails when the premise is short.
         """
         text = raw_response.strip()
         obj = self._extract_json(text)
@@ -268,18 +357,36 @@ class Parser:
             raise ParsingError("Counterfactual prediction did not flip")
         if rewritten.strip() == input_text.strip():
             raise ParsingError("Counterfactual text is identical to original")
-        # Extract changed tokens via difflib. A flip achieved purely by INSERTING a word
-        # (e.g. negating a hypothesis by adding "not") changes the text but leaves no
-        # original token replaced or deleted, so there is no original-token attribution
-        # for ECS — treat as non-attributable rather than mislabelling it "identical".
+        # Span-restricted CF: validate the protected prefix and narrow the ratio window.
+        ratio_original, ratio_rewritten = input_text, rewritten
+        if edit_span_marker and edit_span_marker in input_text:
+            orig_prefix, orig_span = self._split_on_marker(input_text, edit_span_marker)
+            rew_prefix, rew_span = self._split_on_marker(rewritten, edit_span_marker)
+            if edit_span_marker not in rewritten:
+                raise ParsingError(f"Counterfactual dropped the '{edit_span_marker}' structure; "
+                                   "cannot verify the protected span was kept")
+            if self._collapse_ws(orig_prefix) != self._collapse_ws(rew_prefix):
+                raise ParsingError("Counterfactual edited outside the allowed span "
+                                   f"(text before '{edit_span_marker}' changed)")
+            ratio_original, ratio_rewritten = orig_span, rew_span
+            if not ratio_rewritten.strip():
+                raise ParsingError("Counterfactual editable span is empty after rewrite")
+        # Extract changed tokens via difflib (over the full text — with a validated
+        # unchanged prefix this is equivalent to diffing the span, and it keeps
+        # single-segment datasets on the same code path). A flip achieved purely by
+        # INSERTING a word (e.g. negating a hypothesis by adding "not") changes the
+        # text but leaves no original token replaced or deleted, so there is no
+        # original-token attribution for ECS — treat as non-attributable rather than
+        # mislabelling it "identical".
         from_tokens = self._extract_changed_tokens(input_text, rewritten)
         if not from_tokens:
             raise ParsingError("Counterfactual flips only by insertion(s); no original token "
                                "was replaced or deleted to attribute the prediction to")
-        # Validate edit ratio (word-level Levenshtein)
-        edit_ratio = self._word_edit_ratio(input_text, rewritten)
+        # Validate edit ratio (word-level Levenshtein over the editable window).
+        edit_ratio = self._word_edit_ratio(ratio_original, ratio_rewritten)
         if not skip_validation and edit_ratio > max_edit_ratio:
-            raise ParsingError(f"Counterfactual edit ratio {edit_ratio:.3f} exceeds {max_edit_ratio} threshold")
+            raise ParsingError(f"Counterfactual edit ratio {edit_ratio:.3f} exceeds {max_edit_ratio} threshold"
+                               + (" (computed over the editable span)" if edit_span_marker else ""))
         return rewritten, new_pred, from_tokens
 
     @staticmethod

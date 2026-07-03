@@ -146,6 +146,128 @@ class MetricsCalculator:
         values = [v for p, v in pairwise_agreements.items() if p not in excluded]
         return float(np.mean(values)) if values else None
 
+    def compute_ecs_overlap(self, pairwise_overlaps: Dict[Tuple[str, str], float]) -> Optional[float]:
+        """Size-robust secondary ECS: mean Overlap Coefficient over the same 5
+        cross-paradigm pairs the Jaccard ECS uses (H-RO excluded).
+
+        Jaccard has a structural ceiling when set sizes differ (|CF|≈1-2 vs |H|≈3-5
+        caps Jaccard at ~0.2-0.33 regardless of agreement); the overlap coefficient
+        |A∩B|/min(|A|,|B|) is invariant to that asymmetry — the closest analogue of
+        Krishna et al. (2022)'s feature-agreement@k when the two sets' k differ.
+        Reported alongside (never instead of) the Jaccard ECS so composites with
+        different set-size geometry are comparable.
+        """
+        excluded = {("H", "RO")}
+        values = [v for p, v in pairwise_overlaps.items() if p not in excluded]
+        return float(np.mean(values)) if values else None
+
+    @staticmethod
+    def expected_random_overlap_weighted(set_size_a: int, set_size_b: int,
+                                         weights: Dict[str, float],
+                                         n_sims: int = 2000, seed: int = 42) -> Optional[float]:
+        """Expected Jaccard when both token subsets are drawn WITHOUT replacement with
+        probability proportional to per-token salience weights.
+
+        The uniform null (expected_random_overlap) understates chance agreement when
+        every method is drawn toward the same few high-salience tokens for reasons
+        unrelated to consensus (one obvious sentiment word). Sampling ∝ the model's
+        own graded salience (H's full 1-10 vector over the content vocabulary) gives
+        a harder, salience-aware null; lift over THIS null is the conservative
+        secondary check (review §2.5). Returns None when the weight vector is
+        degenerate (fewer weighted tokens than either set size needs).
+        """
+        vocab = sorted(weights.keys())
+        if not vocab:
+            return None
+        w = np.array([max(float(weights[t]), 1e-9) for t in vocab], dtype=float)
+        p = w / w.sum()
+        n = len(vocab)
+        a = min(int(set_size_a), n)
+        b = min(int(set_size_b), n)
+        if a <= 0 or b <= 0:
+            return None
+        rng = np.random.default_rng(seed)
+        idx = np.arange(n)
+        jac_sum = 0.0
+        for _ in range(n_sims):
+            sa = set(rng.choice(idx, size=a, replace=False, p=p).tolist())
+            sb = set(rng.choice(idx, size=b, replace=False, p=p).tolist())
+            union = len(sa | sb)
+            jac_sum += (len(sa & sb) / union) if union else 0.0
+        return jac_sum / n_sims
+
+    @staticmethod
+    def compute_cross_model_agreement(results) -> Dict[str, Dict]:
+        """Cross-model SAME-strategy agreement: for each (dataset, instance) present
+        under >=2 models, the pairwise Jaccard between different models' evidence
+        sets for the SAME strategy — plus the within-model cross-strategy ECS of the
+        same instances for direct comparison.
+
+        This is the free analysis the multi-model design enables: if within-model
+        cross-strategy consensus is systematically higher than cross-model
+        same-strategy agreement, explanations track model-specific computation
+        ("privileged self-knowledge", arXiv:2602.02639); if it is not, stated
+        evidence is closer to a generic task prior shared across models
+        (cf. the cross-model "explanation lottery", arXiv:2603.15821). All evidence
+        sets are already in the shared normalized token space, so the comparison is
+        apples-to-apples. Zero extra API calls.
+
+        Returns {dataset: {"strategies": {S: {mean_jaccard, n_pairs}},
+                           "cross_model_same_strategy_mean": float|None,
+                           "within_model_cross_strategy_mean_ecs": float|None,
+                           "n_instances_multi_model": int}}
+        """
+        calc = MetricsCalculator()
+        from collections import defaultdict
+        by_instance = defaultdict(list)
+        for r in results:
+            by_instance[(r.dataset, r.instance_id)].append(r)
+
+        strategy_sets = {
+            "H": lambda r: r.highlighting_tokens if r.highlighting_valid else None,
+            "R": lambda r: r.rationale_tokens if r.rationale_valid else None,
+            "CF": lambda r: r.counterfactual_tokens if r.counterfactual_valid else None,
+            "RO": lambda r: {t for t, _ in r.rank_ordering_tokens} if r.rank_ordering_valid else None,
+        }
+
+        per_dataset: Dict[str, Dict] = {}
+        agg = defaultdict(lambda: defaultdict(list))   # dataset -> strategy -> [jaccards]
+        within_ecs = defaultdict(list)                 # dataset -> [ecs values]
+        multi_counts = defaultdict(set)                # dataset -> instance ids with >=2 models
+
+        for (dataset, iid), rows in by_instance.items():
+            if len(rows) < 2:
+                continue
+            multi_counts[dataset].add(iid)
+            for r in rows:
+                if r.ecs is not None:
+                    within_ecs[dataset].append(r.ecs)
+            for s, getter in strategy_sets.items():
+                sets = [getter(r) for r in rows]
+                sets = [x for x in sets if x]
+                for i in range(len(sets)):
+                    for j in range(i + 1, len(sets)):
+                        agg[dataset][s].append(calc.compute_jaccard_similarity(sets[i], sets[j]))
+
+        for dataset in sorted(multi_counts.keys()):
+            strategies = {}
+            all_vals = []
+            for s in ["H", "R", "CF", "RO"]:
+                vals = agg[dataset].get(s, [])
+                strategies[s] = {
+                    "mean_jaccard": float(np.mean(vals)) if vals else None,
+                    "n_pairs": len(vals),
+                }
+                all_vals.extend(vals)
+            per_dataset[dataset] = {
+                "strategies": strategies,
+                "cross_model_same_strategy_mean": float(np.mean(all_vals)) if all_vals else None,
+                "within_model_cross_strategy_mean_ecs": (
+                    float(np.mean(within_ecs[dataset])) if within_ecs[dataset] else None),
+                "n_instances_multi_model": len(multi_counts[dataset]),
+            }
+        return per_dataset
+
     def compute_ecs_primary(self, pairwise_agreements: Dict[Tuple[str, str], float]) -> Tuple[Optional[float], Optional[float], int]:
         """Primary ECS as two composites:
            - extraction_rationale: average of (H,R) and (R,RO) — extraction methods agreeing with rationale

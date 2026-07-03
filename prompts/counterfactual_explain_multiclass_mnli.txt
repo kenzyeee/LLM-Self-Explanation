@@ -2,9 +2,9 @@ The text was classified as: {predicted_label}
 
 Text: "{input_text}"
 
-The text has a Premise and a Hypothesis. Edit only the Hypothesis so that the relationship is classified as "{other_labels_quoted}" instead of "{predicted_label}". Make as few edits as possible, and keep the Premise unchanged.
+The text has a Premise and a Hypothesis. Edit only the Hypothesis so that the relationship is classified as {other_labels_quoted} instead of "{predicted_label}". Make as few edits as possible — change at most a third of the Hypothesis words — and keep the Premise unchanged.
 
-Return the full text (unchanged Premise, edited Hypothesis) in the JSON.
+Pick ONE target label. Return the full text (unchanged Premise, edited Hypothesis) in the JSON.
 
-Return only valid JSON:
+Return only valid JSON (exactly one JSON object, one rewrite):
 {{"rewritten": "<full text with edited Hypothesis>", "new_prediction": "<one of: {other_labels}>"}}

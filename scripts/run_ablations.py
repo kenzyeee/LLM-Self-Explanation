@@ -26,23 +26,18 @@ logger = logging.getLogger(__name__)
 
 STRATEGY_IDS = ["H", "R", "CF", "RO"]
 
+# The ONE pre-registered robustness ablation (FIX_PLAN §P3.3): prompt paraphrase.
+# Each strategy's elicitation is re-worded (*_alt.txt) and the ECS delta vs the
+# baseline wording is measured. The former normalization and highlighting-k
+# ablations were cut: normalization is pinned by the v3.0 shared-token-space
+# requirement (varying it re-introduces the review §8.2 asymmetry by construction),
+# and dynamic_k superseded fixed-k highlighting.
 ALT_PROMPTS = {
     "H": "prompts/highlighting_alt.txt",
     "R": "prompts/rationale_alt.txt",
     "CF": "prompts/counterfactual_alt.txt",
     "RO": "prompts/rank_ordering_alt.txt",
 }
-
-K_PROMPTS = {2: "prompts/highlighting_k2.txt", 5: "prompts/highlighting_k5.txt"}
-
-NORMALIZATION_VARIANTS = {
-    "full": {"use_lemmatization": True, "remove_stopwords": True},
-    "no_lemmatization": {"use_lemmatization": False, "remove_stopwords": True},
-    "no_stopwords": {"use_lemmatization": True, "remove_stopwords": False},
-    "minimal": {"use_lemmatization": False, "remove_stopwords": False},
-}
-
-BASELINE_K = 3
 
 
 def load_prompt(filepath: str) -> str:
@@ -67,11 +62,8 @@ def format_alt_prompt(template: str, predicted_label: str, input_text: str, labe
 
 
 def load_strategy_explain_prompts(config) -> Dict[str, str]:
-    prompts = {}
-    for s in config.explanation_strategies:
-        explain_file = s.prompt_file.replace(".txt", "_explain.txt")
-        prompts[s.id] = load_prompt(explain_file)
-    return prompts
+    # config prompt_file now names the executed *_explain.txt file directly.
+    return {s.id: load_prompt(s.prompt_file) for s in config.explanation_strategies}
 
 
 def load_classification_prompt(config, dataset_name: str = None) -> str:
@@ -96,8 +88,8 @@ def parse_raw_tokens(strategy_id: str, raw: str, text: str,
             _, evidence = parser.parse_rationale(raw, text, normalizer, skip_validation=True)
             return evidence
         elif strategy_id == "CF":
-            cf_text, _ = parser.parse_counterfactual(raw, text, predicted_label, label_set,
-                                                     normalizer, skip_validation=True)
+            cf_text, _pred, _from = parser.parse_counterfactual(raw, text, predicted_label, label_set,
+                                                                normalizer, skip_validation=True)
             orig_words = set(text.lower().split())
             cf_words = set(cf_text.lower().split())
             return list((orig_words - cf_words) | (cf_words - orig_words))
@@ -185,7 +177,12 @@ async def run_ablations(config, args):
                 logger.warning(f"Classification failed for {instance.instance_id}: {e}")
                 continue
 
-            normalizer = Normalizer()
+            # Mirror the live run's normalization (v3.0 shared token space).
+            normalizer = Normalizer(
+                use_lemmatization=config.normalization.use_lemmatization,
+                remove_stopwords=config.normalization.remove_stopwords,
+                lemmatizer=config.normalization.lemmatizer,
+            )
             raw_tokens = {}
             for s in STRATEGY_IDS:
                 try:
@@ -261,84 +258,6 @@ async def run_ablations(config, args):
             with open(output_dir / f"prompt_ablation_{dataset_config.name}.json", "w") as f:
                 json.dump(prompt_results, f, indent=2)
             all_results[f"{dataset_config.name}_prompt"] = prompt_results
-
-        # --- Step 3: Normalization Ablation ---
-        if config.ablations.normalization_variants and baseline_data:
-            logger.info("Running normalization ablation...")
-            norm_results = {}
-            for var_name, norm_kwargs in NORMALIZATION_VARIANTS.items():
-                var_normalizer = Normalizer(**norm_kwargs)
-                deltas = []
-                for bd in baseline_data:
-                    variant_sets = {}
-                    for s in STRATEGY_IDS:
-                        variant_sets[s] = normalize_token_list(bd["raw_tokens"][s], var_normalizer)
-                    variant_ecs = compute_ecs_from_token_sets(variant_sets, calc)
-                    if variant_ecs is not None and bd["baseline_ecs"] is not None:
-                        deltas.append(variant_ecs - bd["baseline_ecs"])
-
-                mean_delta = float(np.mean(deltas)) if deltas else 0.0
-                norm_results[var_name] = {"mean_delta": mean_delta, "n_instances": len(deltas), "deltas": deltas}
-                logger.info(f"  {var_name}: mean delta = {mean_delta:.4f}")
-                for d in deltas:
-                    all_plot_data.append({
-                        "Variation": f"norm_{var_name}",
-                        "ECS_delta": d,
-                        "Dataset": dataset_config.name,
-                        "Ablation": "normalization",
-                    })
-
-            with open(output_dir / f"normalization_ablation_{dataset_config.name}.json", "w") as f:
-                json.dump(norm_results, f, indent=2)
-            all_results[f"{dataset_config.name}_normalization"] = norm_results
-
-        # --- Step 4: K-value Ablation ---
-        if baseline_data:
-            logger.info("Running highlighting k-value ablation...")
-            k_results = {}
-            for k in [k for k in K_PROMPTS if k != BASELINE_K]:
-                k_template = load_prompt(K_PROMPTS[k])
-                if not k_template:
-                    logger.warning(f"K prompt not found for k={k}")
-                    continue
-
-                deltas = []
-                for bd in baseline_data:
-                    inst = bd["instance"]
-                    k_prompt = format_explain_prompt(k_template, bd["predicted_label"])
-
-                    try:
-                        raw_k = await run_explain(engine, bd["class_prompt"],
-                                                  bd["class_raw"], k_prompt)
-                        k_raw_tokens = parse_raw_tokens(
-                            "H", raw_k, inst.text, bd["predicted_label"],
-                            label_set, parser, Normalizer())
-                        k_normalizer = Normalizer()
-                        k_set = normalize_token_list(k_raw_tokens, k_normalizer)
-                    except (APIError, ParsingError, json.JSONDecodeError) as e:
-                        logger.debug(f"  k={k} failed for {inst.instance_id}: {e}")
-                        k_set = set()
-
-                    variant_sets = dict(bd["token_sets"])
-                    variant_sets["H"] = k_set
-                    variant_ecs = compute_ecs_from_token_sets(variant_sets, calc)
-                    if variant_ecs is not None and bd["baseline_ecs"] is not None:
-                        deltas.append(variant_ecs - bd["baseline_ecs"])
-
-                mean_delta = float(np.mean(deltas)) if deltas else 0.0
-                k_results[f"k={k}"] = {"mean_delta": mean_delta, "n_instances": len(deltas), "deltas": deltas}
-                logger.info(f"  k={k}: mean delta = {mean_delta:.4f} ({len(deltas)} instances)")
-                for d in deltas:
-                    all_plot_data.append({
-                        "Variation": f"k_{k}",
-                        "ECS_delta": d,
-                        "Dataset": dataset_config.name,
-                        "Ablation": "highlighting_k",
-                    })
-
-            with open(output_dir / f"highlighting_k_ablation_{dataset_config.name}.json", "w") as f:
-                json.dump(k_results, f, indent=2)
-            all_results[f"{dataset_config.name}_highlighting_k"] = k_results
 
     # Generate robustness plot
     if all_plot_data:

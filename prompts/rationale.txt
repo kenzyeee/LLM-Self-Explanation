@@ -1,9 +1,0 @@
-Classify the following text into one of these categories: {label_set}
-
-Text: "{input_text}"
-
-Provide a one-sentence rationale explaining why you chose this classification. Focus on the key evidence in the text.
-
-Format your response as:
-Prediction: [your predicted label]
-Rationale: [one sentence explanation]

@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -20,7 +20,9 @@ from src.inference.inference_engine import InferenceEngine
 from src.parsing.parser import Parser, dynamic_k, ensure_spacy_available
 from src.normalization.normalizer import Normalizer
 from src.metrics.metrics_calculator import MetricsCalculator
-from src.metrics.redaction_test import RedactionTest
+from src.statistics.statistical_tests import (
+    sign_flip_permutation_test, holm_correction, compute_confidence_ecs_correlation,
+)
 from src.utils.config_loader import load_and_validate_config, parse_command_line_args, save_config_to_file
 from src.utils.data_models import (
     InstanceResult, SamplingLog, AggregateMetrics, save_instance_results, save_aggregate_metrics,
@@ -94,18 +96,35 @@ def quote_labels(labels: List[str]) -> str:
     return " or ".join(f'"{label}"' for label in labels)
 
 
-def create_prompt_map(config, dataset_name: str = None) -> Dict[str, str]:
-    prompts = {}
+def create_prompt_map(config, dataset_name: str = None) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """Resolve and load every prompt used for a dataset.
+
+    ``strategy.prompt_file`` names the EXECUTED elicitation prompt (the
+    ``*_explain.txt`` file); dataset-specific and multiclass variants are derived
+    from it by suffix. Returns ``(prompts, sources)`` where ``sources`` maps every
+    prompt key to the file path actually loaded — the run's ``prompt_manifest.json``
+    is generated from it, so the provenance record names the prompts that ran
+    (review §1.3/§8: the old snapshot named base files that were never executed).
+    """
+    prompts: Dict[str, str] = {}
+    sources: Dict[str, str] = {}
+
+    def _load(key: str, path: str) -> None:
+        prompts[key] = load_prompt(path)
+        sources[key] = path
+
     for strategy in config.explanation_strategies:
-        prompt_text = load_prompt(strategy.prompt_file)
-        prompts[strategy.id] = prompt_text
-        explain_file = strategy.prompt_file.replace(".txt", "_explain.txt")
+        explain_file = strategy.prompt_file
+        if not explain_file.endswith("_explain.txt"):
+            raise PromptValidationError(
+                f"Strategy {strategy.id}: prompt_file must be the executed '*_explain.txt' "
+                f"prompt, got: {explain_file}")
         ds_specific_explain = None
         if dataset_name:
             ds_specific_explain = explain_file.replace("_explain.txt", f"_explain_{dataset_name}.txt")
             if not Path(ds_specific_explain).exists():
                 ds_specific_explain = None
-        prompts[f"{strategy.id}_explain"] = load_prompt(ds_specific_explain or explain_file)
+        _load(f"{strategy.id}_explain", ds_specific_explain or explain_file)
         multiclass_variant = explain_file.replace("_explain.txt", "_explain_multiclass.txt")
         ds_specific_multiclass = None
         if dataset_name:
@@ -114,7 +133,7 @@ def create_prompt_map(config, dataset_name: str = None) -> Dict[str, str]:
                 ds_specific_multiclass = None
         multiclass_path = ds_specific_multiclass or multiclass_variant
         if Path(multiclass_path).exists():
-            prompts[f"{strategy.id}_explain_multiclass"] = load_prompt(multiclass_path)
+            _load(f"{strategy.id}_explain_multiclass", multiclass_path)
 
     # CF-free (unconstrained) prompts — the secondary validity-minimality CONTRAST,
     # NOT used in ECS. The CF_explain / CF_explain_multiclass prompts are the MINIMAL
@@ -123,21 +142,41 @@ def create_prompt_map(config, dataset_name: str = None) -> Dict[str, str]:
     if dataset_name and Path(f"prompts/counterfactual_explain_free_{dataset_name}.txt").exists():
         cf_free_path = f"prompts/counterfactual_explain_free_{dataset_name}.txt"
     if Path(cf_free_path).exists():
-        prompts["CF_explain_free"] = load_prompt(cf_free_path)
+        _load("CF_explain_free", cf_free_path)
     cf_free_mc_path = "prompts/counterfactual_explain_free_multiclass.txt"
     if dataset_name and Path(f"prompts/counterfactual_explain_free_multiclass_{dataset_name}.txt").exists():
         cf_free_mc_path = f"prompts/counterfactual_explain_free_multiclass_{dataset_name}.txt"
     if Path(cf_free_mc_path).exists():
-        prompts["CF_explain_free_multiclass"] = load_prompt(cf_free_mc_path)
+        _load("CF_explain_free_multiclass", cf_free_mc_path)
+
+    # Verbalized confidence (0-100), elicited right after classification. The
+    # no-logprob confidence signal (Tian et al. 2023; Xiong et al. 2024, ICLR).
+    if getattr(config, "confidence", None) is not None and config.confidence.enabled:
+        _load("confidence", config.confidence.prompt_file)
 
     class_prompt_path = "prompts/classification.txt"
     if dataset_name:
         ds_specific = f"prompts/classification_{dataset_name}.txt"
         if Path(ds_specific).exists():
             class_prompt_path = ds_specific
-    prompts["classification"] = load_prompt(class_prompt_path)
+    _load("classification", class_prompt_path)
 
-    return prompts
+    return prompts, sources
+
+
+def build_prompt_manifest(sources_by_dataset: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+    """Machine-checkable prompt provenance: {dataset: {key: {file, sha256}}}."""
+    manifest: Dict[str, Any] = {}
+    for dataset_name, sources in sources_by_dataset.items():
+        entry = {}
+        for key, path in sorted(sources.items()):
+            content = Path(path).read_text(encoding="utf-8")
+            entry[key] = {
+                "file": path,
+                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            }
+        manifest[dataset_name] = entry
+    return manifest
 
 
 def pre_clean_text(text: str) -> str:
@@ -191,7 +230,7 @@ async def process_instance(
 
     # Real token accounting: accumulate the API's reported usage from EVERY call this
     # instance makes (classification, explanations, CF re-classification/corrections,
-    # CF-minimal, redaction). count_tokens() string re-tokenization is gone.
+    # CF-minimal, confidence). count_tokens() string re-tokenization is gone.
     prompt_tokens = 0
     response_tokens = 0
 
@@ -240,10 +279,33 @@ async def process_instance(
     base_max_tokens = max((getattr(config.inference, "max_tokens", 512) or 512), 800)
     truncated_strategies = []
 
-    # Randomize strategy order
-    strategy_order = STRATEGY_IDS.copy()
-    random.shuffle(strategy_order)
+    # Verbalized confidence (0-100 -> [0,1]) — elicited BEFORE any explanation strategy,
+    # so it is conditioned only on the committed label (Tian et al. 2023; Xiong et al.
+    # 2024). Failure to parse leaves confidence=None (unknown), never a fake 0.
+    confidence_value: Optional[float] = None
+    if getattr(config, "confidence", None) is not None and config.confidence.enabled \
+            and "confidence" in prompts:
+        try:
+            conf_prompt = format_explain_prompt(prompts["confidence"], predicted_label,
+                                                input_text=clean_text)
+            conf_messages = [
+                {"role": "user", "content": class_prompt},
+                {"role": "assistant", "content": class_result.raw_response},
+                {"role": "user", "content": conf_prompt},
+            ]
+            conf_raw, conf_usage = await engine.chat_with_usage(conf_messages, max_tokens=200)
+            _acct(conf_usage)
+            confidence_value = parser.parse_confidence(conf_raw)
+        except (ParsingError, json.JSONDecodeError) as e:
+            logger.warning(f"Confidence elicitation unparseable for {instance_id}: {e}")
+        except APIError as e:
+            logger.warning(f"Confidence elicitation API error for {instance_id}: {e}")
 
+    # Strategy elicitation order is FIXED (config order). Each strategy is an
+    # independent 3-message conversation (classification prompt + label + one explain
+    # prompt) — no shared context accumulates across strategies, so execution order
+    # cannot influence the model, and randomizing it added unseeded nondeterminism
+    # while controlling nothing (review §8.6).
     raw_responses = {}
     explain_prompts = {}
     parsed_tokens = {}
@@ -256,6 +318,15 @@ async def process_instance(
     cf_rules_compliant = False
     cf_flip_verified = False
     cf_actual_label = ""
+    # Single-shot vs coached stratum (review §2.6): the correction loop makes reported
+    # rates multi-shot-search rates; these flags let analyses stratify by whether the
+    # first, uncoached elicitation already succeeded.
+    cf_valid_first_attempt = False
+    cf_corrected = False
+    ro_self_corrected = False
+    # Span-restricted CF (MNLI edits only the Hypothesis): validate the protected
+    # prefix and compute the minimal-edit ratio over the editable span (review §8.6c).
+    cf_span_marker = "Hypothesis:" if getattr(dataset_config, "secondary_text_field", None) else None
     # CF-free contrast state (D2) — always defined even if the branch never runs.
     cf_contrast_valid = False
     cf_contrast_flip_verified = False
@@ -270,7 +341,7 @@ async def process_instance(
         parsed_flags[strat_id] = False
         valid_flags[strat_id] = False
 
-    for strat_id in strategy_order:
+    for strat_id in STRATEGY_IDS:
         if strat_id == "CF":
             # Canonical CF for ECS is the MINIMAL contrastive edit (MiCE; Ross et al.
             # 2021): the smallest flip-inducing change is the informative attribution.
@@ -320,12 +391,20 @@ async def process_instance(
             continue
         try:
             if strat_id == "H":
+                # parse_highlighting returns NORMALIZED tokens ranked by salience —
+                # the same canonical token space every other strategy's evidence uses,
+                # so the H_ordered ranking is directly comparable with RO's normalized
+                # ranking for Kendall τ / RBO (review §8.6b: raw-case H keys vs
+                # normalized RO tokens zeroed rank agreement on capitalized datasets).
                 tokens = parser.parse_highlighting(raw, clean_text, normalizer)
-                normalized = normalizer.normalize_tokens(tokens)
+                normalized = set(tokens)
                 if not normalized:
                     raise ParsingError("H evidence set is empty after normalization")
                 parsed_tokens[strat_id] = normalized
                 parsed_tokens["H_ordered"] = tokens
+                # Full graded salience vector (normalized token -> max score) for the
+                # salience-weighted secondary random baseline (review §2.5).
+                parsed_tokens["H_salience_weights"] = dict(getattr(parser, "_h_salience_weights", {}) or {})
                 parsed_flags[strat_id] = True
                 valid_flags[strat_id] = True
             elif strat_id == "R":
@@ -354,10 +433,13 @@ async def process_instance(
                 try:
                     # Canonical CF is the MINIMAL edit — enforce the MiCE-style edit-ratio
                     # cap so non-minimal rewrites are rejected (a real flip and a non-empty
-                    # change are also required).
+                    # change are also required). For span-restricted datasets (MNLI) the
+                    # ratio is computed over the editable span and the Premise must be
+                    # unchanged (review §8.6c).
                     cf_text_used, new_pred, from_tokens = parser.parse_counterfactual(
                         raw, clean_text, predicted_label, label_set, normalizer,
-                        max_edit_ratio=cf_max_ratio, skip_validation=False
+                        max_edit_ratio=cf_max_ratio, skip_validation=False,
+                        edit_span_marker=cf_span_marker,
                     )
                     cf_rules_compliant = bool(from_tokens)
                 except ParsingError:
@@ -378,6 +460,8 @@ async def process_instance(
                         cf_actual_label = parser.parse_classification(cf_class_result.raw_response, label_set)
                         cf_flip_verified = (cf_actual_label != predicted_label)
                         if cf_flip_verified:
+                            cf_valid_first_attempt = (cf_attempt == 0)
+                            cf_corrected = (cf_attempt > 0)
                             if cf_actual_label != new_pred:
                                 logger.warning(f"CF flip verified but label mismatch for {instance_id}: model said {new_pred}, actual {cf_actual_label}")
                             break
@@ -405,7 +489,8 @@ async def process_instance(
                                 raise ParsingError("CF correction JSON not parseable")
                             cf_text_used, new_pred, from_tokens = parser.parse_counterfactual(
                                 correction_raw, clean_text, predicted_label, label_set, normalizer,
-                                max_edit_ratio=cf_max_ratio, skip_validation=False
+                                max_edit_ratio=cf_max_ratio, skip_validation=False,
+                                edit_span_marker=cf_span_marker,
                             )
                             cf_rules_compliant = bool(from_tokens)
                         else:
@@ -417,9 +502,21 @@ async def process_instance(
                         if cf_attempt == 1:
                             raise ParsingError(f"CF flip verification exception: {e}")
                         raise
-                parsed_tokens[strat_id] = from_tokens
+                # CF evidence must live in the SAME normalized token space as H/R/RO
+                # (review §8.3: raw difflib tokens retain stopwords the other sets can
+                # never contain, deflating every CF pair and mis-modelling the null).
+                # The raw edited surface tokens are kept separately for the erasure
+                # pass and minimality accounting.
+                cf_evidence = normalizer.normalize_tokens(sorted(from_tokens))
+                parsed_tokens["CF_edited_raw"] = set(from_tokens)
                 parsed_tokens["CF_reconstructed"] = cf_text_used
                 parsed_tokens["CF_canonical_minimality"] = len(from_tokens) / max(len(clean_text.split()), 1)
+                if not cf_evidence:
+                    # Flip stats above remain informative; only the ECS attribution is
+                    # unusable (the edit touched no content/polarity token).
+                    raise ParsingError("CF evidence set is empty after normalization "
+                                       "(edited tokens are all function words)")
+                parsed_tokens[strat_id] = cf_evidence
                 parsed_flags[strat_id] = True
                 valid_flags[strat_id] = True
             elif strat_id == "RO":
@@ -447,6 +544,7 @@ async def process_instance(
                         _acct(_ro_corr_usage)
                         ranked = parser.parse_rank_ordering(correction_raw, clean_text, normalizer)
                         ro_tokens = [t for t, r in ranked]
+                        ro_self_corrected = True
                         if len(ro_tokens) >= 3:
                             logger.info(f"RO self-correction for {instance_id}: recovered {len(ro_tokens)} valid tokens")
                         else:
@@ -480,7 +578,10 @@ async def process_instance(
             # Logged loudly (with traceback) so it is never silently masked.
             logger.error(f"Unexpected error parsing {instance_id} strategy {strat_id}: {e}", exc_info=True)
 
-    cf_flip_verified = parsed_flags.get("CF", False) and valid_flags.get("CF", False) and cf_flip_verified
+    # cf_flip_verified reports the flip-verification stage's own outcome. It is NOT
+    # conjoined with the evidence-validity flags: a verified flip whose edit touched
+    # only function words is a real flip with unusable ECS attribution — staged
+    # reporting keeps those two facts separate.
     cf_counterfactual_text = parsed_tokens.get("CF_reconstructed", "")
     ro_set = parsed_tokens.get("RO_set", set())
     ro_ranked = parsed_tokens.get("RO_ranked", [])
@@ -529,11 +630,15 @@ async def process_instance(
         r_introduced_concept_rate = n_introduced_r / (n_anchored_r + n_introduced_r)
 
     ecs_value = None
+    ecs_overlap_value = None
     ecs_extraction_rationale = None
     ecs_extraction_perturbation = None
     ecs_primary_pairs = 0
     if n_valid >= 3:
         ecs_value = calc.compute_ecs(agreements)
+        # Size-robust secondary composite over the same cross-paradigm pairs
+        # (overlap coefficient — immune to the Jaccard set-size ceiling, §2.2).
+        ecs_overlap_value = calc.compute_ecs_overlap(overlaps)
         ecs_extraction_rationale, ecs_extraction_perturbation, ecs_primary_pairs = calc.compute_ecs_primary(agreements)
     else:
         logger.warning(f"Only {n_valid} valid strategies for {instance_id} — ECS not computed")
@@ -559,6 +664,32 @@ async def process_instance(
             ecs_random = sum(_rand_vals) / len(_rand_vals)
             ecs_lift = ecs_value - ecs_random
 
+    # Secondary, salience-weighted null (review §2.5): the uniform null understates
+    # chance agreement when all methods gravitate to the same few high-salience
+    # tokens for reasons unrelated to consensus. Sampling ∝ H's own graded salience
+    # over the content vocabulary gives a harder null; lift over it is the
+    # conservative secondary lift.
+    ecs_random_weighted = None
+    ecs_lift_weighted = None
+    h_weights = parsed_tokens.get("H_salience_weights") or {}
+    if ecs_value is not None and len(h_weights) >= 2:
+        _excluded_w = {("H", "RO")}
+        _strats_w = ["H", "R", "CF", "RO"]
+        _wvals = []
+        for _i in range(len(_strats_w)):
+            for _j in range(_i + 1, len(_strats_w)):
+                s1, s2 = _strats_w[_i], _strats_w[_j]
+                if (s1, s2) in _excluded_w:
+                    continue
+                set1, set2 = explanations.get(s1, set()), explanations.get(s2, set())
+                if set1 and set2:
+                    ew = calc.expected_random_overlap_weighted(len(set1), len(set2), h_weights)
+                    if ew is not None:
+                        _wvals.append(ew)
+        if _wvals:
+            ecs_random_weighted = sum(_wvals) / len(_wvals)
+            ecs_lift_weighted = ecs_value - ecs_random_weighted
+
     # D2: CF-free (unconstrained) variant — the validity-minimality CONTRAST to the
     # canonical minimal CF (Mayne et al. 2025). Elicited separately, NOT used in ECS;
     # it reliably flips but is far from minimal, which is exactly the contrast we report.
@@ -581,10 +712,12 @@ async def process_instance(
                 cf_free_raw, _cf_free_usage = await engine.chat_with_usage(cf_free_messages, max_tokens=base_max_tokens)
                 _acct(_cf_free_usage)
                 # Unconstrained: no edit-ratio cap (skip_validation=True); a real flip and
-                # a non-empty change are still required.
+                # a non-empty change are still required. The span restriction (Premise
+                # unchanged) still applies on span-restricted datasets — the free
+                # variant relaxes minimality, not the editable region.
                 cf_free_text, _cf_free_pred, cf_free_from = parser.parse_counterfactual(
                     cf_free_raw, clean_text, predicted_label, label_set, normalizer,
-                    skip_validation=True,
+                    skip_validation=True, edit_span_marker=cf_span_marker,
                 )
                 cf_contrast_text = cf_free_text
                 cf_contrast_minimality = len(cf_free_from) / max(len(clean_text.split()), 1)
@@ -610,7 +743,7 @@ async def process_instance(
         input_length=len(text.split()),
         ground_truth_label=instance.label,
         predicted_label=predicted_label,
-        confidence=0.0,
+        confidence=confidence_value,
         correct=correct,
         classification_prompt=class_prompt,
         classification_raw_response=class_result.raw_response,
@@ -656,6 +789,7 @@ async def process_instance(
         kendall_H_RO=kendall_val,
         normalized_kendall_H_RO=normalized_kendall_val,
         ecs=ecs_value,
+        ecs_overlap=ecs_overlap_value,
         ecs_extraction_rationale=ecs_extraction_rationale,
         ecs_extraction_perturbation=ecs_extraction_perturbation,
         ecs_primary_pairs=ecs_primary_pairs,
@@ -666,10 +800,16 @@ async def process_instance(
         cf_json_valid=cf_json_valid,
         cf_rules_compliant=cf_rules_compliant,
         cf_flip_verified=cf_flip_verified,
+        cf_valid_first_attempt=cf_valid_first_attempt,
+        cf_corrected=cf_corrected,
+        ro_self_corrected=ro_self_corrected,
         cf_actual_label=cf_actual_label,
         cf_counterfactual_text=cf_counterfactual_text,
+        cf_edited_tokens_raw=parsed_tokens.get("CF_edited_raw", set()),
         ecs_random=ecs_random,
         ecs_lift=ecs_lift,
+        ecs_random_weighted=ecs_random_weighted,
+        ecs_lift_weighted=ecs_lift_weighted,
         cf_canonical_minimality=parsed_tokens.get("CF_canonical_minimality"),
         cf_contrast_valid=cf_contrast_valid,
         cf_contrast_flip_verified=cf_contrast_flip_verified,
@@ -693,32 +833,15 @@ async def process_instance(
             result.cc4_tokens = calc.compute_consensus_core(reduced_explanations, n_valid)
             result.cc4_size = len(result.cc4_tokens)
 
-    # Redaction test: progressive token removal for H and RO
-    h_ordered_tokens = parsed_tokens.get("H_ordered", [])
-    ro_ranked_tokens = [t for t, r in parsed_tokens.get("RO_ranked", [])]
-    # D5: erasure is defined relative to the model's OWN prediction, so it runs
-    # for misclassified instances too (not gated on correctness).
-    if predicted_label:
-        async def redact_classify(redacted_text: str) -> str:
-            cfp = format_prompt(prompts["classification"], redacted_text, label_set)
-            cr = await engine.classify(cfp)
-            _acct(cr.usage)
-            return parser.parse_classification(cr.raw_response, label_set)
+    # NOTE: the former inline "redaction test" (per-token progressive re-classification
+    # of H/RO rankings during collection) was removed (FIX_PLAN §P3.1): it duplicated
+    # the dedicated post-hoc erasure pass (scripts/run_validity_tests.py) with a
+    # coarser ad-hoc metric on only 2 of 4 strategies, at the cost of up to k extra
+    # API calls per strategy per instance, and its "faithfulness" naming leaked the
+    # reading the study's framing forbids. Erasure has ONE instrument now.
 
-        rt = RedactionTest(redact_classify, normalizer=normalizer)
-        if h_ordered_tokens:
-            try:
-                result.redaction_H = await rt.run(h_ordered_tokens, clean_text, predicted_label)
-            except Exception as e:
-                logger.warning(f"Redaction test H failed for {instance_id}: {e}")
-        if ro_ranked_tokens:
-            try:
-                result.redaction_RO = await rt.run(ro_ranked_tokens, clean_text, predicted_label)
-            except Exception as e:
-                logger.warning(f"Redaction test RO failed for {instance_id}: {e}")
-
-    # Re-sync token totals: redaction and CF-minimal calls were accounted into the
-    # local accumulator AFTER the result object was constructed, so refresh the fields.
+    # Re-sync token totals: confidence/CF calls were accounted into the local
+    # accumulator AFTER the result object was constructed, so refresh the fields.
     result.prompt_tokens = prompt_tokens
     result.response_tokens = response_tokens
     result.truncated_strategies = list(truncated_strategies)
@@ -752,12 +875,30 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
             counterfactual_success_rate=0, rank_ordering_success_rate=0,
         )
 
+    # Bootstrap CI on mean ECS. Pooled levels ("overall", "dataset") contain up to
+    # one row per (instance, model): the SAME instance appears under every model, so
+    # rows are CLUSTERED by instance and a row-level bootstrap treats correlated rows
+    # as independent (CI too narrow — review §8.6a). Resample instance clusters for
+    # pooled levels; row-level for per-model levels where rows are distinct instances.
     if len(ecs_values) > 1:
-        boot_means = []
         rng = np.random.default_rng(42)
-        for _ in range(1000):
-            sample = rng.choice(ecs_values, size=len(ecs_values), replace=True)
-            boot_means.append(float(np.mean(sample)))
+        boot_means = []
+        if level in ("overall", "dataset"):
+            from collections import defaultdict
+            clusters = defaultdict(list)
+            for r in results:
+                if r.ecs is not None:
+                    clusters[(r.dataset, r.instance_id)].append(r.ecs)
+            cluster_vals = list(clusters.values())
+            n_clusters = len(cluster_vals)
+            for _ in range(1000):
+                idx = rng.integers(0, n_clusters, size=n_clusters)
+                sample = [v for i in idx for v in cluster_vals[i]]
+                boot_means.append(float(np.mean(sample)))
+        else:
+            for _ in range(1000):
+                sample = rng.choice(ecs_values, size=len(ecs_values), replace=True)
+                boot_means.append(float(np.mean(sample)))
         ecs_ci_lower = float(np.percentile(boot_means, 2.5))
         ecs_ci_upper = float(np.percentile(boot_means, 97.5))
     else:
@@ -796,14 +937,47 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
     # D1 lift / D2 CF trade-off / D6 introduced-concept rate / correctness split
     ecs_lift_values = [r.ecs_lift for r in results if r.ecs_lift is not None]
     ecs_random_values = [r.ecs_random for r in results if r.ecs_random is not None]
+    ecs_lift_weighted_values = [r.ecs_lift_weighted for r in results if r.ecs_lift_weighted is not None]
+    ecs_overlap_values = [r.ecs_overlap for r in results if r.ecs_overlap is not None]
     icr_values = [r.r_introduced_concept_rate for r in results if r.r_introduced_concept_rate is not None]
     cf_canonical_min_values = [r.cf_canonical_minimality for r in results if r.cf_canonical_minimality is not None]
     cf_contrast_min_values = [r.cf_contrast_minimality for r in results if r.cf_contrast_minimality is not None]
-    ecs_correct_vals = [r.ecs for r in results if r.ecs is not None and r.correct]
-    ecs_incorrect_vals = [r.ecs for r in results if r.ecs is not None and not r.correct]
+    # Correct-vs-incorrect ECS is only meaningful WITHIN a model×dataset cell —
+    # pooled, it is confounded by dataset/model composition (review §2.11: all
+    # incorrect instances came from one dataset, so the pooled contrast was a
+    # dataset effect wearing a correctness costume).
+    if level == "model_dataset":
+        ecs_correct_vals = [r.ecs for r in results if r.ecs is not None and r.correct]
+        ecs_incorrect_vals = [r.ecs for r in results if r.ecs is not None and not r.correct]
+    else:
+        ecs_correct_vals = []
+        ecs_incorrect_vals = []
     n_results_safe = max(len(results), 1)
     cf_canonical_validity_rate = sum(1 for r in results if r.counterfactual_valid) / n_results_safe
     cf_contrast_validity_rate = sum(1 for r in results if r.cf_contrast_valid) / n_results_safe
+    # Single-shot vs coached stratum (review §2.6): validity of the FIRST, uncoached
+    # elicitation, and how many valid CFs needed the correction loop.
+    cf_first_attempt_validity_rate = sum(1 for r in results if r.cf_valid_first_attempt) / n_results_safe
+    cf_corrected_count = sum(1 for r in results if r.cf_corrected)
+    ro_self_corrected_count = sum(1 for r in results if r.ro_self_corrected)
+    # Verbalized-confidence <-> ECS association (Spearman + seeded bootstrap CI);
+    # computed per cell over instances with both quantities present.
+    conf_pairs = [(r.confidence, r.ecs) for r in results
+                  if r.confidence is not None and r.ecs is not None]
+    if len(conf_pairs) >= 3:
+        corr = compute_confidence_ecs_correlation([c for c, _ in conf_pairs],
+                                                  [e for _, e in conf_pairs])
+        spearman_rho, spearman_p = corr.rho, corr.p_value
+        corr_ci_lo, corr_ci_hi = corr.ci_lower, corr.ci_upper
+    else:
+        spearman_rho, spearman_p, corr_ci_lo, corr_ci_hi = 0.0, 1.0, 0.0, 0.0
+    conf_values = [c for c, _ in conf_pairs]
+    # Per-pair coverage: how many instances actually contributed to each pairwise mean
+    # (a pooled pairwise mean over 3 instances reads very differently than over 300).
+    pair_ns = {}
+    for key in ("jaccard_H_R", "jaccard_H_CF", "jaccard_H_RO",
+                "jaccard_R_CF", "jaccard_R_RO", "jaccard_CF_RO"):
+        pair_ns[key] = sum(1 for r in results if getattr(r, key) is not None)
 
     return AggregateMetrics(
         aggregation_level=level,
@@ -852,29 +1026,35 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
         mean_cc4_size=safe_mean([r.cc4_size for r in results]),
         pct_instances_with_cc3=sum(1 for r in results if r.cc3_size > 0) / max(len(results), 1) * 100,
         pct_instances_with_cc4=sum(1 for r in results if r.cc4_size > 0) / max(len(results), 1) * 100,
-        spearman_rho=0.0,
-        spearman_p_value=1.0,
-        correlation_ci_lower=0.0,
-        correlation_ci_upper=0.0,
+        spearman_rho=spearman_rho,
+        spearman_p_value=spearman_p,
+        correlation_ci_lower=corr_ci_lo,
+        correlation_ci_upper=corr_ci_hi,
+        n_confidence=len(conf_values),
+        mean_confidence=safe_mean(conf_values),
         highlighting_success_rate=sum(1 for r in results if r.highlighting_parsed) / max(len(results), 1),
         rationale_success_rate=sum(1 for r in results if r.rationale_parsed) / max(len(results), 1),
         counterfactual_success_rate=sum(1 for r in results if r.counterfactual_parsed) / max(len(results), 1),
         rank_ordering_success_rate=sum(1 for r in results if r.rank_ordering_parsed) / max(len(results), 1),
-        mean_redaction_faithfulness_H=safe_mean([r.redaction_H.faithfulness for r in results if r.redaction_H is not None]),
-        mean_redaction_faithfulness_RO=safe_mean([r.redaction_RO.faithfulness for r in results if r.redaction_RO is not None]),
-        n_redaction_H=sum(1 for r in results if r.redaction_H is not None),
-        n_redaction_RO=sum(1 for r in results if r.redaction_RO is not None),
         mean_ecs_lift=safe_mean(ecs_lift_values),
         mean_ecs_random=safe_mean(ecs_random_values),
+        mean_ecs_lift_weighted=safe_mean(ecs_lift_weighted_values),
+        n_lift_weighted=len(ecs_lift_weighted_values),
+        mean_ecs_overlap=safe_mean(ecs_overlap_values),
+        n_lift=len(ecs_lift_values),
         introduced_concept_rate=safe_mean(icr_values),
         cf_canonical_validity_rate=cf_canonical_validity_rate,
         cf_contrast_validity_rate=cf_contrast_validity_rate,
+        cf_first_attempt_validity_rate=cf_first_attempt_validity_rate,
+        n_cf_corrected=cf_corrected_count,
+        n_ro_self_corrected=ro_self_corrected_count,
         mean_cf_canonical_minimality=safe_mean(cf_canonical_min_values),
         mean_cf_contrast_minimality=safe_mean(cf_contrast_min_values),
         mean_ecs_correct=safe_mean(ecs_correct_vals),
         n_correct=len(ecs_correct_vals),
         mean_ecs_incorrect=safe_mean(ecs_incorrect_vals),
         n_incorrect=len(ecs_incorrect_vals),
+        pair_ns=pair_ns,
     )
 
 
@@ -1011,6 +1191,7 @@ async def run_experiment(config, args):
     all_results: List[InstanceResult] = []
     aggregate_list: List[AggregateMetrics] = []
     sampling_logs: List[SamplingLog] = []
+    prompt_sources_by_dataset: Dict[str, Dict[str, str]] = {}
 
     for dataset_config in config.datasets:
         dataset_name = dataset_config.name
@@ -1053,8 +1234,10 @@ async def run_experiment(config, args):
 
         summary.total_instances += len(instances) * len(config.models)
         # Prompts depend only on config + dataset, not the model, so build once and
-        # share (read-only) across the concurrent model runs.
-        prompts = create_prompt_map(config, dataset_name=dataset_name)
+        # share (read-only) across the concurrent model runs. The resolved sources go
+        # into prompt_manifest.json — the provenance record of what actually ran.
+        prompts, prompt_sources = create_prompt_map(config, dataset_name=dataset_name)
+        prompt_sources_by_dataset[dataset_name] = prompt_sources
 
         # Run every configured model on this dataset CONCURRENTLY ("at once"). Each
         # model gets its own engine, checkpoint file, and result list, so the
@@ -1113,12 +1296,58 @@ async def run_experiment(config, args):
         agg = compute_aggregate_metrics(md_results, "model", mn)
         aggregate_list.append(agg)
 
+    # Pre-registered NHST family (a): per model×dataset cell, is mean ECS-lift > 0?
+    # One-sided sign-flip permutation on the per-instance paired (ecs − ecs_random)
+    # differences; Holm correction across the cells of this run (one family). Cells
+    # below metrics.min_n_for_test report the estimate but skip the test (p=None) —
+    # a permutation test on 1-5 points is noise, not evidence.
+    min_n = getattr(config.metrics, "min_n_for_test", 6)
+    n_perms = getattr(config.metrics, "permutation_tests", 10000)
+    md_aggs = [a for a in aggregate_list if a.aggregation_level == "model_dataset"]
+    md_results_by_group = {
+        a.group_name: [r.ecs_lift for r in all_results
+                       if r.ecs_lift is not None
+                       and f"{next((m.name for m in config.models if m.model_id == r.model), r.model)}_{r.dataset}" == a.group_name]
+        for a in md_aggs
+    }
+    raw_ps: List[Optional[float]] = []
+    for a in md_aggs:
+        lifts = md_results_by_group.get(a.group_name, [])
+        if len(lifts) >= min_n:
+            p = sign_flip_permutation_test(lifts, n_permutations=n_perms,
+                                           seed=config.experiment.seed, alternative="greater")
+        else:
+            p = None
+        raw_ps.append(p)
+    if getattr(config.metrics, "correction", "holm") == "holm":
+        adj_ps = holm_correction(raw_ps)
+    else:
+        adj_ps = list(raw_ps)
+    for a, p_raw, p_adj in zip(md_aggs, raw_ps, adj_ps):
+        a.ecs_lift_p_value = p_raw
+        a.ecs_lift_p_holm = p_adj
+
+    # Cross-model same-strategy agreement (zero extra API calls): compares
+    # within-model cross-strategy consensus against cross-model same-strategy
+    # agreement — privileged-self-knowledge vs generic-task-prior (arXiv:2602.02639,
+    # arXiv:2603.15821). Only computable when >=2 models ran.
+    cross_model = MetricsCalculator.compute_cross_model_agreement(all_results)
+    if cross_model:
+        with open(output_dir / "cross_model_agreement.json", "w", encoding="utf-8") as f:
+            json.dump(cross_model, f, indent=2)
+
     # Save results
     save_instance_results(all_results, str(output_dir / "instance_results.jsonl"))
     save_aggregate_metrics(aggregate_list, str(output_dir / "aggregate_metrics.json"))
 
     save_config_to_file(config, output_dir / "config_snapshot.yaml")
     save_metrics_csv(all_results, str(output_dir / "instance_metrics.csv"))
+
+    # Machine-checkable prompt provenance: which prompt files (and content hashes)
+    # were EXECUTED per dataset. The config snapshot alone was previously misleading
+    # (review §1.3: it named base files that never ran).
+    with open(output_dir / "prompt_manifest.json", "w", encoding="utf-8") as f:
+        json.dump(build_prompt_manifest(prompt_sources_by_dataset), f, indent=2)
 
     save_metadata_table(
         [d.to_dict() for d in config.datasets],
@@ -1142,7 +1371,7 @@ async def run_experiment(config, args):
     with open(output_dir / "execution_summary.txt", 'w') as f:
         f.write(summary.generate_report())
 
-    report_md = generate_md_report(aggregate_list, all_results, config)
+    report_md = generate_md_report(aggregate_list, all_results, config, cross_model=cross_model)
     with open(output_dir / "report.md", 'w', encoding='utf-8') as f:
         f.write(report_md)
     logger.info(f"Report saved to {output_dir / 'report.md'}")

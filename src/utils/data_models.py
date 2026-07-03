@@ -5,7 +5,6 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Set, List, Tuple, Dict, Optional, Any
-from src.metrics.redaction_test import RedactionTestResult
 
 
 @dataclass
@@ -33,12 +32,14 @@ class InstanceResult:
     text: str
     ground_truth_label: str
     predicted_label: str
-    confidence: float
-    correct: bool
-    raw_highlighting: str
-    raw_rationale: str
-    raw_counterfactual: str
-    raw_rank_ordering: str
+    # Verbalized confidence in [0,1] (elicited 0-100, Tian et al. 2023 / Xiong et al.
+    # 2024); None = not elicited or unparseable — never a fake 0.0.
+    confidence: Optional[float] = None
+    correct: bool = False
+    raw_highlighting: str = ""
+    raw_rationale: str = ""
+    raw_counterfactual: str = ""
+    raw_rank_ordering: str = ""
     input_length: int = 0
     highlighting_tokens: Set[str] = field(default_factory=set)
     rationale_tokens: Set[str] = field(default_factory=set)
@@ -87,6 +88,10 @@ class InstanceResult:
     kendall_H_RO: Optional[float] = None
     normalized_kendall_H_RO: Optional[float] = None
     ecs: Optional[float] = None
+    # Size-robust secondary composite: mean Overlap Coefficient over the same 5
+    # cross-paradigm pairs (immune to the Jaccard set-size ceiling; Krishna-style
+    # feature-agreement analogue).
+    ecs_overlap: Optional[float] = None
     ecs_complete: Optional[float] = None
     ecs_primary_pairs: int = 0
     n_valid_strategies: int = 0
@@ -97,11 +102,13 @@ class InstanceResult:
     cc4_tokens: Set[str] = field(default_factory=set)
     cc3_size: int = 0
     cc4_size: int = 0
-    redaction_H: Optional[RedactionTestResult] = None
-    redaction_RO: Optional[RedactionTestResult] = None
-    # --- D1: ECS as lift over a random-selection baseline (the headline number) ---
+    # --- D1: ECS as lift over a random-selection baseline (the headline number).
+    #     *_weighted is the secondary lift over a salience-weighted null (harder null:
+    #     random draws ∝ H's graded salience — review §2.5). ---
     ecs_random: Optional[float] = None
     ecs_lift: Optional[float] = None
+    ecs_random_weighted: Optional[float] = None
+    ecs_lift_weighted: Optional[float] = None
     # --- D2: CF dual variant. The generic cf_* / counterfactual_* fields describe the
     #         CANONICAL CF = the minimal contrastive edit (MiCE), used in ECS;
     #         cf_canonical_minimality is its minimality. cf_contrast_* is the secondary
@@ -112,6 +119,16 @@ class InstanceResult:
     cf_contrast_minimality: Optional[float] = None
     cf_contrast_tokens: Set[str] = field(default_factory=set)
     cf_contrast_text: str = ""
+    # Single-shot vs coached stratum (review §2.6): whether the FIRST uncoached CF
+    # elicitation was already flip-valid, whether the correction loop produced the
+    # valid CF, and whether RO needed its hallucination self-correction.
+    cf_valid_first_attempt: bool = False
+    cf_corrected: bool = False
+    ro_self_corrected: bool = False
+    # Raw edited SURFACE tokens from the CF diff (pre-normalization) — used by the
+    # erasure pass and minimality accounting. counterfactual_tokens (above) is the
+    # NORMALIZED evidence set used in ECS (same token space as H/R/RO — review §8.3).
+    cf_edited_tokens_raw: Set[str] = field(default_factory=set)
     # --- D6: introduced-concept rate (fraction of rationale concepts absent from input) ---
     r_introduced_concept_rate: Optional[float] = None
     # Strategies whose elicitation hit the token limit (finish_reason="length") and could
@@ -152,7 +169,7 @@ class InstanceResult:
                    'overlap_R_RO': self.overlap_R_RO, 'overlap_CF_RO': self.overlap_CF_RO,
                    'rbo_H_RO': self.rbo_H_RO,
                    'kendall_H_RO': self.kendall_H_RO, 'normalized_kendall_H_RO': self.normalized_kendall_H_RO,
-                   'ecs': self.ecs, 'ecs_complete': self.ecs_complete,
+                   'ecs': self.ecs, 'ecs_overlap': self.ecs_overlap, 'ecs_complete': self.ecs_complete,
                    'ecs_primary_pairs': self.ecs_primary_pairs,
                    'ecs_extraction_rationale': self.ecs_extraction_rationale,
                    'ecs_extraction_perturbation': self.ecs_extraction_perturbation,
@@ -164,11 +181,15 @@ class InstanceResult:
                      'cf_json_valid': self.cf_json_valid,
                      'cf_rules_compliant': self.cf_rules_compliant,
                      'cf_flip_verified': self.cf_flip_verified,
+                     'cf_valid_first_attempt': self.cf_valid_first_attempt,
+                     'cf_corrected': self.cf_corrected,
+                     'ro_self_corrected': self.ro_self_corrected,
                      'cf_actual_label': self.cf_actual_label,
                      'cf_counterfactual_text': self.cf_counterfactual_text,
-                     'redaction_H': self.redaction_H.to_dict() if self.redaction_H else None,
-                     'redaction_RO': self.redaction_RO.to_dict() if self.redaction_RO else None,
+                     'cf_edited_tokens_raw': sorted(list(self.cf_edited_tokens_raw)),
                      'ecs_random': self.ecs_random, 'ecs_lift': self.ecs_lift,
+                     'ecs_random_weighted': self.ecs_random_weighted,
+                     'ecs_lift_weighted': self.ecs_lift_weighted,
                      'cf_canonical_minimality': self.cf_canonical_minimality,
                      'cf_contrast_valid': self.cf_contrast_valid,
                      'cf_contrast_flip_verified': self.cf_contrast_flip_verified,
@@ -188,7 +209,7 @@ class InstanceResult:
             text=data['text'],
             input_length=data.get('input_length', len(data['text'])),
             ground_truth_label=data['ground_truth_label'],
-            predicted_label=data['predicted_label'], confidence=data['confidence'], correct=data['correct'],
+            predicted_label=data['predicted_label'], confidence=data.get('confidence'), correct=data['correct'],
             raw_highlighting=data['raw_highlighting'], raw_rationale=data['raw_rationale'],
             raw_counterfactual=data['raw_counterfactual'], raw_rank_ordering=data['raw_rank_ordering'],
             highlighting_tokens=set(data['highlighting_tokens']),
@@ -220,7 +241,7 @@ class InstanceResult:
             rbo_H_RO=data.get('rbo_H_RO'),
             kendall_H_RO=data.get('kendall_H_RO'),
             normalized_kendall_H_RO=data.get('normalized_kendall_H_RO'),
-            ecs=data.get('ecs'), ecs_complete=data.get('ecs_complete'),
+            ecs=data.get('ecs'), ecs_overlap=data.get('ecs_overlap'), ecs_complete=data.get('ecs_complete'),
             ecs_primary_pairs=data.get('ecs_primary_pairs', 0),
             ecs_extraction_rationale=data.get('ecs_extraction_rationale'),
             ecs_extraction_perturbation=data.get('ecs_extraction_perturbation'),
@@ -233,11 +254,15 @@ class InstanceResult:
             cf_json_valid=data.get('cf_json_valid', False),
             cf_rules_compliant=data.get('cf_rules_compliant', False),
             cf_flip_verified=data.get('cf_flip_verified', False),
+            cf_valid_first_attempt=data.get('cf_valid_first_attempt', False),
+            cf_corrected=data.get('cf_corrected', False),
+            ro_self_corrected=data.get('ro_self_corrected', False),
             cf_actual_label=data.get('cf_actual_label', ''),
             cf_counterfactual_text=data.get('cf_counterfactual_text', ''),
-            redaction_H=RedactionTestResult.from_dict(data['redaction_H']) if data.get('redaction_H') else None,
-            redaction_RO=RedactionTestResult.from_dict(data['redaction_RO']) if data.get('redaction_RO') else None,
+            cf_edited_tokens_raw=set(data.get('cf_edited_tokens_raw', [])),
             ecs_random=data.get('ecs_random'), ecs_lift=data.get('ecs_lift'),
+            ecs_random_weighted=data.get('ecs_random_weighted'),
+            ecs_lift_weighted=data.get('ecs_lift_weighted'),
             cf_canonical_minimality=data.get('cf_canonical_minimality'),
             cf_contrast_valid=data.get('cf_contrast_valid', False),
             cf_contrast_flip_verified=data.get('cf_contrast_flip_verified', False),
@@ -305,22 +330,39 @@ class AggregateMetrics:
     sampled_samples: int = 0
     dropped_wrong_pred: int = 0
     dropped_other: Dict[str, int] = field(default_factory=dict)
-    mean_redaction_faithfulness_H: float = 0.0
-    mean_redaction_faithfulness_RO: float = 0.0
-    n_redaction_H: int = 0
-    n_redaction_RO: int = 0
-    # --- D1/D2/D6 + correct-vs-incorrect split ---
+    # --- D1/D2/D6 + correctness split (correctness only set at model_dataset level —
+    #     pooled, the contrast is confounded by cell composition, review §2.11) ---
     mean_ecs_lift: float = 0.0
     mean_ecs_random: float = 0.0
+    n_lift: int = 0
+    # Secondary lift over the salience-weighted null (review §2.5).
+    mean_ecs_lift_weighted: float = 0.0
+    n_lift_weighted: int = 0
+    # Size-robust secondary composite (mean overlap coefficient over ECS pairs).
+    mean_ecs_overlap: float = 0.0
     introduced_concept_rate: float = 0.0
     cf_canonical_validity_rate: float = 0.0
     cf_contrast_validity_rate: float = 0.0
+    # Single-shot vs coached stratum (review §2.6).
+    cf_first_attempt_validity_rate: float = 0.0
+    n_cf_corrected: int = 0
+    n_ro_self_corrected: int = 0
     mean_cf_canonical_minimality: float = 0.0
     mean_cf_contrast_minimality: float = 0.0
     mean_ecs_correct: float = 0.0
     n_correct: int = 0
     mean_ecs_incorrect: float = 0.0
     n_incorrect: int = 0
+    # Verbalized confidence coverage.
+    mean_confidence: float = 0.0
+    n_confidence: int = 0
+    # Per-pair instance counts behind each pairwise mean.
+    pair_ns: Dict[str, int] = field(default_factory=dict)
+    # Pre-registered test (a): sign-flip permutation p for mean ECS-lift > 0 in this
+    # cell (model_dataset level only), raw and Holm-adjusted across the run's cells.
+    # None = test not run (pooled level, or cell below metrics.min_n_for_test).
+    ecs_lift_p_value: Optional[float] = None
+    ecs_lift_p_holm: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -524,6 +566,7 @@ def generate_md_report(
     aggregate_list: List[AggregateMetrics],
     all_results: List[InstanceResult],
     config,
+    cross_model: Optional[Dict[str, Any]] = None,
 ) -> str:
     overall = next((m for m in aggregate_list if m.aggregation_level == "overall"), None)
     model_dataset = [m for m in aggregate_list if m.aggregation_level == "model_dataset"]
@@ -635,13 +678,21 @@ def generate_md_report(
         lines.append("")
         lines.append("## Overall Metrics")
         lines.append("")
+        lines.append("> **Pooled across models and datasets — descriptive context only.** The primary "
+                     "reporting unit is the model×dataset cell (tables below): pooled numbers mix "
+                     "heterogeneous tasks and models, and their bootstrap CI resamples instance "
+                     "clusters (the same instance appears under every model). At scale, "
+                     "**complete-case ECS is the primary estimand** — partial-case ECS averages "
+                     "whichever pairs survived, which changes the construct per instance.")
+        lines.append("")
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
-        lines.append(f"| Mean ECS (all, N={overall.n_instances}) | {overall.mean_ecs:.4f} |")
+        lines.append(f"| **Mean ECS (complete cases, N={overall.n_complete_cases}) — primary estimand** | {overall.mean_ecs_complete:.4f} |")
+        lines.append(f"| Complete cases | {overall.n_complete_cases}/{overall.n_instances} ({overall.pct_complete_cases:.0f}%) |")
+        lines.append(f"| Mean ECS (all with ≥3 valid, N={overall.n_instances}) | {overall.mean_ecs:.4f} |")
+        lines.append(f"| Mean ECS-overlap (size-robust secondary, same pairs) | {overall.mean_ecs_overlap:.4f} |")
         lines.append(f"| Mean ECS (extraction–rationale: H,R,RO) | {overall.mean_ecs_extraction_rationale:.4f} |")
         lines.append(f"| Mean ECS (extraction–perturbation: H,CF,RO) | {overall.mean_ecs_extraction_perturbation:.4f} |")
-        lines.append(f"| Mean ECS (complete cases, N={overall.n_complete_cases}) | {overall.mean_ecs_complete:.4f} |")
-        lines.append(f"| Complete cases | {overall.n_complete_cases}/{overall.n_instances} ({overall.pct_complete_cases:.0f}%) |")
 
         # Flag degenerate ECS — instances where <2 pairs were used
         reduced_primary = [r for r in all_results if r.ecs is not None and r.ecs_primary_pairs < 2]
@@ -655,27 +706,37 @@ def generate_md_report(
                 lines.append(f"  → ... and {len(reduced_primary)-5} more")
         lines.append(f"| Std ECS | {overall.std_ecs:.4f} |")
         lines.append(f"| Median ECS | {overall.median_ecs:.4f} |")
-        lines.append(f"| **Mean ECS lift over chance** (ECS − random) | {overall.mean_ecs_lift:+.4f} |")
-        lines.append(f"| Mean ECS random baseline | {overall.mean_ecs_random:.4f} |")
+        lines.append(f"| **Mean ECS lift over chance** (ECS − uniform random) | {overall.mean_ecs_lift:+.4f} |")
+        lines.append(f"| Mean ECS random baseline (uniform) | {overall.mean_ecs_random:.4f} |")
+        lines.append(f"| Mean ECS lift over salience-weighted null (secondary, N={overall.n_lift_weighted}) | {overall.mean_ecs_lift_weighted:+.4f} |")
         lines.append("")
-        lines.append("> **No significance testing applied.** The lift, correct-vs-incorrect split, "
-                     "length/vocab strata, and any other comparison above are point estimates (plus the "
-                     "bootstrap CI on mean ECS where shown) — no hypothesis test or multiple-comparison "
-                     "correction has been run, regardless of what `config/experiment.yaml` declares. At "
-                     "this pilot N, treat every comparison in this report as descriptive.")
+        lines.append("> **Significance testing: pre-registered tests only.** Exactly two test families "
+                     "run (FIX_PLAN §P1.3): (a) sign-flip permutation on per-instance ECS-lift per "
+                     "model×dataset cell, Holm-corrected across cells — results in the table below; "
+                     "(b) CC-erasure vs random control in the separate erasure pass. Every other "
+                     "number in this report — strata, splits, contrasts — is descriptive, and cells "
+                     "below the configured minimum N report estimates without a test.")
         lines.append("")
-        lines.append(f"| Mean ECS — correct preds (N={overall.n_correct}) | {overall.mean_ecs_correct:.4f} |")
-        lines.append(f"| Mean ECS — incorrect preds (N={overall.n_incorrect}) | {overall.mean_ecs_incorrect:.4f} |")
         lines.append(f"| Introduced-concept rate (R) | {overall.introduced_concept_rate:.3f} |")
         lines.append(f"| CF canonical (minimal) validity rate | {overall.cf_canonical_validity_rate*100:.0f}% |")
+        lines.append(f"| CF canonical validity — first attempt (single-shot, uncoached) | {overall.cf_first_attempt_validity_rate*100:.0f}% |")
+        lines.append(f"| CF valid only after correction loop (coached stratum) | {overall.n_cf_corrected} instances |")
+        lines.append(f"| RO required hallucination self-correction | {overall.n_ro_self_corrected} instances |")
         lines.append(f"| CF contrast (free) validity rate | {overall.cf_contrast_validity_rate*100:.0f}% |")
         lines.append(f"| CF canonical (minimal) minimality (edits/len) | {overall.mean_cf_canonical_minimality:.3f} |")
         lines.append(f"| CF contrast (free) minimality (edits/len) | {overall.mean_cf_contrast_minimality:.3f} |")
-        lines.append(f"| Confidence elicitation | Removed — logprobs unsupported on this model; does not proxy faithfulness |")
+        lines.append(f"| Verbalized confidence — mean (N={overall.n_confidence}) | {overall.mean_confidence:.3f} |")
         lines.append(f"| Mean CC3 size | {overall.mean_cc3_size:.2f} |")
         lines.append(f"| Mean CC4 size | {overall.mean_cc4_size:.2f} |")
         lines.append(f"| % instances with CC3 | {overall.pct_instances_with_cc3:.1f}% |")
         lines.append(f"| % instances with CC4 | {overall.pct_instances_with_cc4:.1f}% |")
+        lines.append("")
+        lines.append("> The CF minimal-vs-free validity contrast replicates the validity–minimality "
+                     "trade-off of arXiv:2509.09396 (*LLMs Don't Know Their Own Decision Boundaries*): "
+                     "unconstrained rewrites flip reliably but over-edit; minimal edits often fail to "
+                     "flip. Single-shot rates are reported separately from the coached loop because the "
+                     "correction re-prompt makes headline rates multi-shot-search rates (not comparable "
+                     "to single-shot elicitation in Madsen et al. 2024 / MiCE).")
         lines.append("")
         lines.append("> **Framing.** ECS is an inter-method **consistency** measure, reported as **lift over a random "
                      "baseline** (raw overlap is confounded by set size and vocabulary). It is **not** a faithfulness "
@@ -684,16 +745,65 @@ def generate_md_report(
                      "ground truth; its headline is Consensus-Core erasure vs. a same-size random control, by ECS-lift tier.")
 
         lines.append("")
+        lines.append("### Pre-registered test (a): mean ECS-lift > 0, per model×dataset cell")
+        lines.append("")
+        lines.append("One-sided sign-flip permutation on per-instance (ECS − ECS_random) differences; "
+                     "Holm-corrected across this run's cells. `—` = cell below the configured minimum N "
+                     "for testing (estimate reported, test skipped).")
+        lines.append("")
+        lines.append("| Model | Dataset | N (lift) | Mean lift | p (raw) | p (Holm) |")
+        lines.append("|-------|---------|----------|-----------|---------|----------|")
+        for md in model_dataset:
+            parts = md.group_name.split("_", 1)
+            ds = parts[1] if len(parts) > 1 else md.group_name
+            model_label = parts[0] if len(parts) > 1 else "—"
+            p_raw = f"{md.ecs_lift_p_value:.4f}" if md.ecs_lift_p_value is not None else "—"
+            p_holm = f"{md.ecs_lift_p_holm:.4f}" if md.ecs_lift_p_holm is not None else "—"
+            lines.append(f"| {model_label} | {ds} | {md.n_lift} | {md.mean_ecs_lift:+.4f} | {p_raw} | {p_holm} |")
+
+        lines.append("")
+        lines.append("### ECS by prediction correctness (per cell only)")
+        lines.append("")
+        lines.append("Reported per model×dataset cell only — pooled, this contrast is confounded by "
+                     "cell composition. Descriptive; no test.")
+        lines.append("")
+        lines.append("| Model | Dataset | Mean ECS correct (N) | Mean ECS incorrect (N) |")
+        lines.append("|-------|---------|----------------------|------------------------|")
+        for md in model_dataset:
+            parts = md.group_name.split("_", 1)
+            ds = parts[1] if len(parts) > 1 else md.group_name
+            model_label = parts[0] if len(parts) > 1 else "—"
+            lines.append(f"| {model_label} | {ds} | {md.mean_ecs_correct:.4f} ({md.n_correct}) | "
+                         f"{md.mean_ecs_incorrect:.4f} ({md.n_incorrect}) |")
+
+        lines.append("")
+        lines.append("### Verbalized confidence ↔ ECS (Spearman, per cell)")
+        lines.append("")
+        lines.append("Association estimate with a seeded bootstrap CI (pre-registered as an estimate, "
+                     "not a hypothesis test). Confidence is the model's verbalized 0–100 probability "
+                     "that its classification is correct (Tian et al. 2023; Xiong et al. 2024).")
+        lines.append("")
+        lines.append("| Model | Dataset | N pairs | Spearman ρ | 95% CI |")
+        lines.append("|-------|---------|---------|------------|--------|")
+        for md in model_dataset:
+            parts = md.group_name.split("_", 1)
+            ds = parts[1] if len(parts) > 1 else md.group_name
+            model_label = parts[0] if len(parts) > 1 else "—"
+            lines.append(f"| {model_label} | {ds} | {md.n_confidence} | {md.spearman_rho:.3f} | "
+                         f"[{md.correlation_ci_lower:.3f}, {md.correlation_ci_upper:.3f}] |")
+
+        lines.append("")
         lines.append("### Pairwise Agreement (Overlap Coefficient)")
         lines.append("")
-        lines.append("| Pair | Overlap Coeff (mean) | Jaccard (mean) |")
-        lines.append("|------|----------------------|----------------|")
-        lines.append(f"| H–R | {overall.mean_overlap_H_R:.4f} | {overall.mean_jaccard_H_R:.4f} |")
-        lines.append(f"| H–CF | {overall.mean_overlap_H_CF:.4f} | {overall.mean_jaccard_H_CF:.4f} |")
-        lines.append(f"| H–RO | {overall.mean_overlap_H_RO:.4f} | {overall.mean_jaccard_H_RO:.4f} |")
-        lines.append(f"| R–CF | {overall.mean_overlap_R_CF:.4f} | {overall.mean_jaccard_R_CF:.4f} |")
-        lines.append(f"| R–RO | {overall.mean_overlap_R_RO:.4f} | {overall.mean_jaccard_R_RO:.4f} |")
-        lines.append(f"| CF–RO | {overall.mean_overlap_CF_RO:.4f} | {overall.mean_jaccard_CF_RO:.4f} |")
+        _pn = overall.pair_ns or {}
+        lines.append("| Pair | Overlap Coeff (mean) | Jaccard (mean) | N instances |")
+        lines.append("|------|----------------------|----------------|-------------|")
+        lines.append(f"| H–R | {overall.mean_overlap_H_R:.4f} | {overall.mean_jaccard_H_R:.4f} | {_pn.get('jaccard_H_R', 0)} |")
+        lines.append(f"| H–CF | {overall.mean_overlap_H_CF:.4f} | {overall.mean_jaccard_H_CF:.4f} | {_pn.get('jaccard_H_CF', 0)} |")
+        lines.append(f"| H–RO | {overall.mean_overlap_H_RO:.4f} | {overall.mean_jaccard_H_RO:.4f} | {_pn.get('jaccard_H_RO', 0)} |")
+        lines.append(f"| R–CF | {overall.mean_overlap_R_CF:.4f} | {overall.mean_jaccard_R_CF:.4f} | {_pn.get('jaccard_R_CF', 0)} |")
+        lines.append(f"| R–RO | {overall.mean_overlap_R_RO:.4f} | {overall.mean_jaccard_R_RO:.4f} | {_pn.get('jaccard_R_RO', 0)} |")
+        lines.append(f"| CF–RO | {overall.mean_overlap_CF_RO:.4f} | {overall.mean_jaccard_CF_RO:.4f} | {_pn.get('jaccard_CF_RO', 0)} |")
         lines.append("")
         lines.append("### Rank-Based Agreement (H vs RO)")
         lines.append("")
@@ -704,7 +814,37 @@ def generate_md_report(
         lines.append(f"| Kendall τ (H,RO) | {overall.mean_kendall_H_RO:.4f} |")
         lines.append(f"| Normalized τ | {overall.mean_normalized_kendall_H_RO:.4f} |")
         lines.append("")
-        lines.append("> Jaccard is what feeds the headline ECS and ECS-lift (both computed from Jaccard pairwise agreement, never Overlap Coefficient). Overlap Coefficient is reported here as a size-robust complement — unlike Jaccard, it is not penalized by smaller salience sets — for interpreting individual pairs, not for the headline number. RBO measures top-weighted rank agreement between H's graded salience order and RO's selected ranking; Kendall τ provides a complementary rank correlation measure.")
+        lines.append("> Jaccard is what feeds the headline ECS and ECS-lift (both computed from Jaccard pairwise agreement, never Overlap Coefficient). Overlap Coefficient is reported as a size-robust complement — unlike Jaccard, it is not penalized by smaller salience sets — and its cross-paradigm mean is the `ECS-overlap` secondary composite. RBO measures top-weighted rank agreement between H's graded salience order and RO's selected ranking (both rankings live in the same normalized token space); Kendall τ provides a complementary rank correlation measure.")
+
+        if cross_model:
+            lines.append("")
+            lines.append("## Cross-Model Agreement (same strategy, different models)")
+            lines.append("")
+            lines.append("For every instance run under ≥2 models: the Jaccard between DIFFERENT models' "
+                         "evidence sets for the SAME strategy, next to the within-model cross-strategy "
+                         "ECS of the same instances. If within-model consensus systematically exceeds "
+                         "cross-model same-strategy agreement, stated evidence tracks model-specific "
+                         "computation (privileged self-knowledge, arXiv:2602.02639); if not, it is "
+                         "closer to a generic task prior shared across models (cf. the cross-model "
+                         "explanation lottery, arXiv:2603.15821). Zero extra API calls; descriptive.")
+            lines.append("")
+            lines.append("| Dataset | N instances | H | R | CF | RO | Cross-model mean | Within-model mean ECS |")
+            lines.append("|---------|-------------|---|---|----|----|------------------|------------------------|")
+            for ds, entry in sorted(cross_model.items()):
+                strat = entry.get("strategies", {})
+
+                def _cell(s):
+                    v = strat.get(s, {}).get("mean_jaccard")
+                    n = strat.get(s, {}).get("n_pairs", 0)
+                    return f"{v:.3f} ({n})" if v is not None else f"— ({n})"
+
+                xm = entry.get("cross_model_same_strategy_mean")
+                wm = entry.get("within_model_cross_strategy_mean_ecs")
+                xm_s = f"{xm:.3f}" if xm is not None else "—"
+                wm_s = f"{wm:.3f}" if wm is not None else "—"
+                lines.append(
+                    f"| {ds} | {entry.get('n_instances_multi_model', 0)} | {_cell('H')} | {_cell('R')} | "
+                    f"{_cell('CF')} | {_cell('RO')} | {xm_s} | {wm_s} |")
 
         lines.append("")
         lines.append("### Validation Rates (strict)")
@@ -769,8 +909,17 @@ def generate_md_report(
     for r in all_results:
         lines.append(f"### {r.instance_id} — {_model_label(r.model)}")
         lines.append("")
-        if not r.correct:
-            lines.append("> **SKIPPED**: Wrong prediction — no explanation strategies elicited, no ECS computed.")
+        # ONLY the unparseable-classification case is actually skipped by the pipeline
+        # (no usable label -> nothing to explain). Wrong-but-parseable predictions get
+        # the full elicitation per D5 and are rendered in full below with a stratum
+        # banner — the old renderer claimed they were skipped while the aggregates
+        # included their ECS (review §8.5, a report-integrity contradiction).
+        _pipeline_skipped = (r.n_valid_strategies == 0 and not r.raw_highlighting
+                             and not r.raw_rationale and not r.raw_counterfactual
+                             and not r.raw_rank_ordering and r.ecs is None)
+        if _pipeline_skipped:
+            lines.append("> **SKIPPED**: classification response unparseable — no usable label, "
+                         "so no explanation strategies were elicited and no ECS was computed.")
             lines.append("")
             lines.append(f"- **Ground truth:** `{r.ground_truth_label}`")
             lines.append(f"- **Predicted:** `{r.predicted_label}` ✗")
@@ -778,6 +927,11 @@ def generate_md_report(
             lines.append(f"- **Raw response length:** {r.raw_response_length} chars")
             lines.append("")
             continue
+        if not r.correct:
+            lines.append("> ⚠ **Wrong prediction** — included per D5 (incorrect-prediction stratum). "
+                         "Explanations below are elicited for the model's OWN (incorrect) label; "
+                         "ECS/erasure are defined relative to that prediction.")
+            lines.append("")
 
         lines.append("#### 1. Classification Prompt")
         lines.append("```")
@@ -792,6 +946,7 @@ def generate_md_report(
         lines.append("#### 3. Ground Truth & Prediction")
         lines.append(f"- **Ground truth:** `{r.ground_truth_label}`")
         lines.append(f"- **Predicted:** `{r.predicted_label}` {'✓' if r.correct else '✗'}")
+        lines.append(f"- **Verbalized confidence:** {f'{r.confidence:.2f}' if r.confidence is not None else '—'}")
         lines.append(f"- **Model refused:** {'Yes' if r.model_refused else 'No'}")
         lines.append(f"- **Input length:** {r.input_length} words")
         lines.append(f"- **Raw response length:** {r.raw_response_length} chars")
@@ -957,9 +1112,11 @@ def save_metrics_csv(results: List[InstanceResult], filepath: str) -> None:
         'prompt_hash',
         'jaccard_H_R', 'jaccard_H_CF', 'jaccard_H_RO', 'jaccard_R_CF', 'jaccard_R_RO', 'jaccard_CF_RO',
         'overlap_H_R', 'overlap_H_CF', 'overlap_H_RO', 'overlap_R_CF', 'overlap_R_RO', 'overlap_CF_RO',
-        'rbo_H_RO', 'kendall_H_RO', 'normalized_kendall_H_RO', 'ecs',
+        'rbo_H_RO', 'kendall_H_RO', 'normalized_kendall_H_RO', 'ecs', 'ecs_overlap',
+        'ecs_random', 'ecs_lift', 'ecs_random_weighted', 'ecs_lift_weighted',
         'ecs_extraction_rationale', 'ecs_extraction_perturbation', 'ecs_primary_pairs',
-        'cf_flip_verified', 'cf_actual_label',
+        'cf_flip_verified', 'cf_valid_first_attempt', 'cf_corrected', 'ro_self_corrected',
+        'cf_actual_label',
         'highlighting_parsed', 'rationale_parsed', 'counterfactual_parsed', 'rank_ordering_parsed',
         'cc3_size', 'cc4_size',
     ]

@@ -63,7 +63,10 @@ class InferenceEngine:
     there is no single API-key env var like the previous provider had.
     """
 
-    def __init__(self, model_name: str = "us.meta.llama3-3-70b-instruct-v1:0",
+    # Default matches the first configured model family and resolves in the
+    # documented AWS_REGION (eu-north-1). Production call sites always pass the
+    # model id from config explicitly; the default exists for tests/ad-hoc use.
+    def __init__(self, model_name: str = "eu.amazon.nova-pro-v1:0",
                  region: str = None, max_retries: int = 3, concurrent_requests: int = 5,
                  request_timeout: int = 30, context_window: int = 8192):
         self.model_name = model_name
@@ -305,10 +308,3 @@ class InferenceEngine:
     async def explain(self, prompt: str, strategy: str) -> ExplanationResult:
         raw_response = await self._make_request(prompt, max_tokens=512)
         return ExplanationResult(strategy=strategy, raw_response=raw_response, timestamp=datetime.now())
-
-    async def classify_with_mask(self, prompt: str, masked_tokens: Set[str]) -> ClassificationResult:
-        content, usage = await self._complete([{"role": "user", "content": prompt}], 1024, self.max_retries)
-        label_match = re.search(r'"label"\s*:\s*"([^"]+)"', content)
-        label = label_match.group(1) if label_match else ""
-        return ClassificationResult(predicted_label=label, confidence=0.0, raw_response=content,
-                                    timestamp=datetime.now(), usage=usage)

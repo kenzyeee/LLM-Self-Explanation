@@ -39,7 +39,6 @@ class ModelConfig:
     context_window: int = 8192
     default_temperature: float = 0.0
     default_top_p: float = 1.0
-    supports_function_calling: bool = False
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -81,11 +80,24 @@ class NormalizationConfig:
 
 
 @dataclass
+class ConfidenceConfig:
+    """Verbalized-confidence elicitation (0-100 -> [0,1]); the no-logprob confidence
+    signal (Tian et al. 2023; Xiong et al. 2024). Elicited right after classification."""
+    enabled: bool = True
+    prompt_file: str = "prompts/confidence_verbalized.txt"
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class MetricsConfig:
     bootstrap_iterations: int = 1000
     permutation_tests: int = 10000
     confidence_level: float = 0.95
-    bonferroni_correction: bool = True
+    # Pre-registered multiple-comparison correction (Holm step-down) and the minimum
+    # per-cell paired-diff count below which a test is skipped (estimate still reported).
+    correction: str = "holm"
+    min_n_for_test: int = 6
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
@@ -95,15 +107,18 @@ class ValidityConfig:
     masking_token: str = "[MASK]"
     n_random_baseline_trials: int = 10
     erasure_operators: List[str] = field(default_factory=lambda: ["mask", "delete"])
+    # Re-verify CF flips with a DIFFERENT configured model (judge-choice sensitivity,
+    # arXiv:2505.13972). Robustness check; the construct-defining flip is self-verified.
+    heldout_cf_verification: bool = True
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
 @dataclass
 class AblationsConfig:
+    """Exactly ONE pre-registered robustness ablation: prompt paraphrase (*_alt.txt).
+    Normalization/highlighting-k ablations were cut (FIX_PLAN_2026-07-02.md §P3.3)."""
     prompt_variants: bool = True
-    normalization_variants: bool = True
-    highlighting_k_values: List[int] = field(default_factory=lambda: [2, 3, 5])
     subset_size: int = 50
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -142,6 +157,7 @@ class Config:
     ablations: AblationsConfig
     output: OutputConfig
     reproducibility: ReproducibilityConfig
+    confidence: ConfidenceConfig = field(default_factory=ConfidenceConfig)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -150,6 +166,7 @@ class Config:
             'models': [m.to_dict() for m in self.models],
             'inference': self.inference.to_dict(),
             'explanation_strategies': [s.to_dict() for s in self.explanation_strategies],
+            'confidence': self.confidence.to_dict(),
             'normalization': self.normalization.to_dict(),
             'metrics': self.metrics.to_dict(),
             'validity': self.validity.to_dict(),

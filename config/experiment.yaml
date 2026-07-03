@@ -56,50 +56,81 @@ inference:
   concurrent_requests: 2
   request_timeout: 30  # seconds
 
-# Explanation Strategies
+# Explanation Strategies. prompt_file names the EXECUTED elicitation prompt (the
+# *_explain.txt files); dataset-specific and multiclass variants are derived from it
+# by suffix (see create_prompt_map). The resolved file + content hash per strategy is
+# written to prompt_manifest.json in every run dir, so provenance is machine-checkable.
 explanation_strategies:
   - id: "H"
     name: "highlighting"
-    prompt_file: "prompts/highlighting.txt"
+    prompt_file: "prompts/highlighting_explain.txt"
     n_tokens: 5
   - id: "R"
     name: "rationale"
-    prompt_file: "prompts/rationale.txt"
+    prompt_file: "prompts/rationale_explain.txt"
   - id: "CF"
     name: "counterfactual"
-    prompt_file: "prompts/counterfactual.txt"
+    prompt_file: "prompts/counterfactual_explain.txt"
   - id: "RO"
     name: "rank_ordering"
-    prompt_file: "prompts/rank_ordering.txt"
+    prompt_file: "prompts/rank_ordering_explain.txt"
     n_tokens: 5
 
-# Normalization
+# Verbalized confidence (0-100), elicited immediately after classification and BEFORE
+# any explanation strategy, so it is conditioned only on the committed label. Restores
+# the pre-registered confidence-ECS correlation RQ without logprobs (Tian et al. 2023,
+# "Just Ask for Calibration"; Xiong et al. 2024, ICLR) — Bedrock's Converse API
+# exposes no token logprobs for any configured model.
+confidence:
+  enabled: true
+  prompt_file: "prompts/confidence_verbalized.txt"
+
+# Normalization. v3.0: evidence lemmatization is ON — all four strategies' evidence
+# sets must live in ONE canonical token space (WordNet fixed-point lemmas) or their
+# overlap is understated by inflection (review §8.2: with v2.0's lemmatization OFF,
+# R's spaCy lemmas could never match H/RO/CF surface forms — H-R Jaccard hit 0.0 on
+# morphologically-inflected overlaps in every run to date). All pre-v3.0 outputs are
+# incomparable with v3.0 outputs.
 normalization:
-  version: "v2.0"
+  version: "v3.0"
   lowercase: true
   remove_punctuation: true
   remove_stopwords: true
-  use_lemmatization: false
+  use_lemmatization: true
   stopword_language: "english"
 
-# Metrics
+# Metrics / statistics. Pre-registered tests ONLY (FIX_PLAN_2026-07-02.md §P1.3):
+# sign-flip permutation on per-instance paired differences —
+#   (a) ECS-lift > 0, per model×dataset cell;
+#   (b) CC-erasure flip vs same-size random control, per model per operator;
+# each family corrected with Holm (step-down Bonferroni). Everything else in the
+# reports is descriptive. Bootstrap CIs are cluster-safe: pooled (cross-model)
+# aggregates resample INSTANCES, not model-rows (3 rows per instance are correlated).
 metrics:
   bootstrap_iterations: 1000
   permutation_tests: 10000
   confidence_level: 0.95
-  bonferroni_correction: true
+  correction: "holm"
+  min_n_for_test: 6  # below this many paired diffs in a cell, report the estimate and skip the test
 
-# Validity / Erasure (faithfulness anchor — a SEPARATE consistency axis, not ground truth)
+# Validity / Erasure — a SEPARATE consistency axis (stated-vs-revealed input
+# sensitivity), explicitly NOT a faithfulness ground truth. Each record is
+# re-classified by the SAME model that produced its original prediction.
 validity:
   masking_token: "[MASK]"
   n_random_baseline_trials: 10          # random-erasure control draws, averaged
   erasure_operators: ["mask", "delete"] # run both; ICE (2026) shows operator choice flips conclusions
+  heldout_cf_verification: true         # also re-verify CF flips with a DIFFERENT configured model
+                                        # (judge-choice sensitivity: arXiv:2505.13972). Robustness
+                                        # check only — the construct-defining flip stays self-verified.
 
-# Ablation Studies
+# Ablation Studies — exactly ONE pre-registered robustness ablation is kept:
+# prompt-paraphrase (the *_alt.txt wordings), run post-main-run on one model.
+# The normalization and highlighting-k ablations were cut (FIX_PLAN §P3.3):
+# normalization is now pinned by the v3.0 shared-token-space requirement, and
+# dynamic_k superseded fixed-k highlighting.
 ablations:
   prompt_variants: true
-  normalization_variants: true
-  highlighting_k_values: [2, 3, 5]
   subset_size: 50  # instances per dataset for ablations
 
 # Output

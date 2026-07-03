@@ -28,8 +28,32 @@ DISCOURSE_WORDS = {
 SEP_PATTERN = re.compile(r'\[SEP\]', re.IGNORECASE)
 HTML_ENTITY_PATTERN = re.compile(r'&[a-zA-Z]+;|&#\d+;')
 
+# Contracted negations. NLTK's English stopword list contains these (both the
+# apostrophe form "shouldn't" and the bare stem "shouldn"), so without an explicit
+# whitelist they are silently dropped from evidence sets — on NLI, negation IS the
+# label-critical evidence (review §8.4: "shouldn't" being discarded invalidated an
+# entire RO strategy). Apostrophe-stripped variants are included because
+# pre_normalize/normalize strip surrounding punctuation and some model tokenizations
+# emit "dont"/"shouldnt".
+NEGATION_CONTRACTIONS = {
+    "n't", "nt", "cannot",
+    "don't", "doesn't", "didn't", "isn't", "aren't", "wasn't", "weren't",
+    "won't", "wouldn't", "can't", "couldn't", "shouldn't", "shan't",
+    "mustn't", "needn't", "hasn't", "haven't", "hadn't", "ain't", "daren't", "mightn't",
+    "dont", "doesnt", "didnt", "isnt", "arent", "wasnt", "werent",
+    "wont", "wouldnt", "cant", "couldnt", "shouldnt", "shant",
+    "mustnt", "neednt", "hasnt", "havent", "hadnt", "aint", "darent", "mightnt",
+    # NLTK stopword stems of the above (post-apostrophe-split tokenizations)
+    "don", "doesn", "didn", "isn", "aren", "wasn", "weren",
+    "won", "wouldn", "couldn", "shouldn", "shan", "mustn", "needn",
+    "hasn", "haven", "hadn", "ain", "daren", "mightn",
+}
+
+# Single polarity whitelist shared by every evidence-extraction path (H, R, CF, RO).
+# parser.py imports this — do NOT define a divergent copy elsewhere (that asymmetry
+# was review §8.4).
 POLARITY_WORDS = {"no", "not", "never", "nor", "neither", "none", "nobody", "nothing", "nowhere",
-                   "every", "some", "any", "all"}
+                   "every", "some", "any", "all"} | NEGATION_CONTRACTIONS
 FALLBACK_STOPWORDS = {
     "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
     "of", "with", "by", "from", "up", "about", "into", "over", "after",
@@ -114,21 +138,26 @@ class Normalizer:
         return t
 
     def _lemmatize_to_fixed_point(self, token: str) -> str:
-        """Apply verb-then-noun WordNet lemmatization repeatedly until it stabilizes.
+        """Apply verb→noun→adjective→adverb WordNet lemmatization repeatedly until stable.
 
-        A single verb-then-noun pass is not idempotent: e.g. 'canings' reduces
-        only via the noun step to 'caning', but feeding 'caning' back finds the
-        verb base 'can'. Without iterating, normalize(normalize(x)) can differ
-        from normalize(x). Iterating to a fixed point guarantees the returned
-        lemma is stable under re-lemmatization. The ``seen`` guard bounds the
-        loop so a (theoretical) lemmatization cycle cannot hang.
+        A single pass is not idempotent: e.g. 'canings' reduces only via the noun
+        step to 'caning', but feeding 'caning' back finds the verb base 'can'.
+        Without iterating, normalize(normalize(x)) can differ from normalize(x).
+        Iterating to a fixed point guarantees the returned lemma is stable under
+        re-lemmatization. The adjective/adverb steps ('a', 'r') are included so
+        comparative/superlative inflections ('happier'→'happy', 'best'→'best'/'good')
+        converge to the same canonical form the rationale extractor's spaCy
+        lemmatizer produces — evidence sets from different strategies must live in
+        ONE token space or their overlap is understated (review §8.2). The ``seen``
+        guard bounds the loop so a (theoretical) lemmatization cycle cannot hang.
         """
         seen: Set[str] = set()
         current = token
         while current not in seen:
             seen.add(current)
-            nxt = self._lemmatizer.lemmatize(
-                self._lemmatizer.lemmatize(current, 'v'), 'n')
+            nxt = current
+            for pos in ('v', 'n', 'a', 'r'):
+                nxt = self._lemmatizer.lemmatize(nxt, pos)
             if nxt == current:
                 break
             current = nxt
@@ -144,6 +173,11 @@ class Normalizer:
 
         t = html.unescape(t)
         t = SEP_PATTERN.sub('', t)
+        # Re-strip after unescaping: an entity like "&#10" decodes to whitespace
+        # ("\n"), which would otherwise survive this pass and be dropped only on a
+        # second normalize() — breaking idempotence (found by the round-trip
+        # property test).
+        t = t.strip()
         t = t.lower()
         t = t.strip(string.punctuation)
         if not t:

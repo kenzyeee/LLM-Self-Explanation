@@ -283,16 +283,6 @@ class TestInferenceEnginePublicMethods:
         assert result.strategy == "R"
         assert result.raw_response == "explanation text"
 
-    @pytest.mark.asyncio
-    async def test_classify_with_mask(self):
-        engine = make_engine()
-        engine.client.converse = MagicMock(return_value=make_response('{"label": "negative"}'))
-
-        result = await engine.classify_with_mask("masked input", {"bad"})
-        assert isinstance(result, ClassificationResult)
-        assert result.raw_response == '{"label": "negative"}'
-        assert result.predicted_label == "negative"
-
 
 class TestInferenceEngineUsageAccounting:
     @pytest.mark.asyncio

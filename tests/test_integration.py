@@ -123,8 +123,8 @@ class TestIntegration:
         from src.statistics.statistical_tests import (
             compute_confidence_ecs_correlation,
             permutation_test,
-            paired_ttest,
-            one_sample_ttest,
+            sign_flip_permutation_test,
+            holm_correction,
         )
 
         confidences = [0.5, 0.6, 0.7, 0.8, 0.9]
@@ -133,14 +133,14 @@ class TestIntegration:
         corr = compute_confidence_ecs_correlation(confidences, ecs_values, n_bootstrap=50)
         assert corr.rho > 0  # should be positive correlation
 
-        p_val = permutation_test(confidences, ecs_values, n_permutations=100)
+        p_val = permutation_test(confidences, ecs_values, n_permutations=100, seed=1)
         assert 0.0 <= p_val <= 1.0
 
-        result = paired_ttest([1, 2, 3], [2, 3, 4])
-        assert isinstance(result.t_statistic, float)
+        p_flip = sign_flip_permutation_test([0.2, 0.3, 0.1, 0.25, 0.15, 0.3], seed=1)
+        assert p_flip is not None and 0.0 < p_flip <= 1.0
 
-        stat, p = one_sample_ttest([0.4, 0.5, 0.6], popmean=0.5)
-        assert isinstance(stat, float)
+        adj = holm_correction([0.01, 0.03, None])
+        assert adj[2] is None and adj[0] is not None
 
     def test_checkpoint_manager(self, tmp_path):
         from src.utils.checkpoint_manager import CheckpointManager

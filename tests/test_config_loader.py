@@ -75,10 +75,10 @@ class TestConfigValidator:
             models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[
-                ExplanationStrategyConfig(id="H", name="h", prompt_file="prompts/highlighting.txt", n_tokens=3),
-                ExplanationStrategyConfig(id="R", name="r", prompt_file="prompts/rationale.txt"),
-                ExplanationStrategyConfig(id="CF", name="cf", prompt_file="prompts/counterfactual.txt"),
-                ExplanationStrategyConfig(id="RO", name="ro", prompt_file="prompts/rank_ordering.txt", n_tokens=5),
+                ExplanationStrategyConfig(id="H", name="h", prompt_file="prompts/highlighting_explain.txt", n_tokens=3),
+                ExplanationStrategyConfig(id="R", name="r", prompt_file="prompts/rationale_explain.txt"),
+                ExplanationStrategyConfig(id="CF", name="cf", prompt_file="prompts/counterfactual_explain.txt"),
+                ExplanationStrategyConfig(id="RO", name="ro", prompt_file="prompts/rank_ordering_explain.txt", n_tokens=5),
             ],
             normalization=NormalizationConfig(),
             metrics=MetricsConfig(),
@@ -89,14 +89,14 @@ class TestConfigValidator:
         )
 
     def test_valid_config(self, tmp_path):
-        for fname in ["highlighting.txt", "rationale.txt", "counterfactual.txt", "rank_ordering.txt"]:
+        for fname in ["highlighting_explain.txt", "rationale_explain.txt", "counterfactual_explain.txt", "rank_ordering_explain.txt"]:
             (tmp_path / "prompts").mkdir(parents=True, exist_ok=True)
             (tmp_path / "prompts" / fname).write_text("prompt content")
         config = self.make_minimal_config()
-        config.explanation_strategies[0].prompt_file = str(tmp_path / "prompts" / "highlighting.txt")
-        config.explanation_strategies[1].prompt_file = str(tmp_path / "prompts" / "rationale.txt")
-        config.explanation_strategies[2].prompt_file = str(tmp_path / "prompts" / "counterfactual.txt")
-        config.explanation_strategies[3].prompt_file = str(tmp_path / "prompts" / "rank_ordering.txt")
+        config.explanation_strategies[0].prompt_file = str(tmp_path / "prompts" / "highlighting_explain.txt")
+        config.explanation_strategies[1].prompt_file = str(tmp_path / "prompts" / "rationale_explain.txt")
+        config.explanation_strategies[2].prompt_file = str(tmp_path / "prompts" / "counterfactual_explain.txt")
+        config.explanation_strategies[3].prompt_file = str(tmp_path / "prompts" / "rank_ordering_explain.txt")
         validator = ConfigValidator()
         validator.validate(config)
 
@@ -335,15 +335,15 @@ class TestConfigValidator:
         with pytest.raises(ConfigurationError):
             ConfigValidator().validate(config)
 
-    def test_ablations_empty_k_values(self):
+    def test_metrics_bad_correction(self):
         config = self.make_minimal_config()
-        config.ablations.highlighting_k_values = []
+        config.metrics.correction = "bonferroni-classic"
         with pytest.raises(ConfigurationError):
             ConfigValidator().validate(config)
 
-    def test_ablations_negative_k(self):
+    def test_metrics_min_n_for_test_too_small(self):
         config = self.make_minimal_config()
-        config.ablations.highlighting_k_values = [-1]
+        config.metrics.min_n_for_test = 1
         with pytest.raises(ConfigurationError):
             ConfigValidator().validate(config)
 
@@ -564,7 +564,7 @@ class TestLoadAndValidateConfig:
     def test_load_and_validate(self, tmp_path):
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
-        for fname in ["highlighting.txt", "rationale.txt", "counterfactual.txt", "rank_ordering.txt"]:
+        for fname in ["highlighting_explain.txt", "rationale_explain.txt", "counterfactual_explain.txt", "rank_ordering_explain.txt"]:
             (prompts_dir / fname).write_text("prompt")
 
         exp_yaml = {
@@ -573,10 +573,10 @@ class TestLoadAndValidateConfig:
             "models": [{"name": "llama", "model_id": "llama-3.3-70b-versatile"}],
             "inference": {"temperature": 0, "max_tokens": 512},
             "explanation_strategies": [
-                {"id": "H", "name": "highlighting", "prompt_file": str(prompts_dir / "highlighting.txt"), "n_tokens": 3},
-                {"id": "R", "name": "rationale", "prompt_file": str(prompts_dir / "rationale.txt")},
-                {"id": "CF", "name": "counterfactual", "prompt_file": str(prompts_dir / "counterfactual.txt")},
-                {"id": "RO", "name": "rank_ordering", "prompt_file": str(prompts_dir / "rank_ordering.txt"), "n_tokens": 5},
+                {"id": "H", "name": "highlighting", "prompt_file": str(prompts_dir / "highlighting_explain.txt"), "n_tokens": 3},
+                {"id": "R", "name": "rationale", "prompt_file": str(prompts_dir / "rationale_explain.txt")},
+                {"id": "CF", "name": "counterfactual", "prompt_file": str(prompts_dir / "counterfactual_explain.txt")},
+                {"id": "RO", "name": "rank_ordering", "prompt_file": str(prompts_dir / "rank_ordering_explain.txt"), "n_tokens": 5},
             ],
         }
         config_dir = tmp_path / "config"
@@ -591,7 +591,7 @@ class TestLoadAndValidateConfig:
     def test_skip_validation(self, tmp_path):
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
-        for fname in ["highlighting.txt", "rationale.txt", "counterfactual.txt", "rank_ordering.txt"]:
+        for fname in ["highlighting_explain.txt", "rationale_explain.txt", "counterfactual_explain.txt", "rank_ordering_explain.txt"]:
             (prompts_dir / fname).write_text("prompt")
 
         exp_yaml = {
@@ -600,10 +600,10 @@ class TestLoadAndValidateConfig:
             "models": [{"name": "llama", "model_id": "llama-3.3-70b-versatile"}],
             "inference": {"temperature": 0, "max_tokens": 512},
             "explanation_strategies": [
-                {"id": "H", "name": "highlighting", "prompt_file": str(prompts_dir / "highlighting.txt"), "n_tokens": 3},
-                {"id": "R", "name": "rationale", "prompt_file": str(prompts_dir / "rationale.txt")},
-                {"id": "CF", "name": "counterfactual", "prompt_file": str(prompts_dir / "counterfactual.txt")},
-                {"id": "RO", "name": "rank_ordering", "prompt_file": str(prompts_dir / "rank_ordering.txt"), "n_tokens": 5},
+                {"id": "H", "name": "highlighting", "prompt_file": str(prompts_dir / "highlighting_explain.txt"), "n_tokens": 3},
+                {"id": "R", "name": "rationale", "prompt_file": str(prompts_dir / "rationale_explain.txt")},
+                {"id": "CF", "name": "counterfactual", "prompt_file": str(prompts_dir / "counterfactual_explain.txt")},
+                {"id": "RO", "name": "rank_ordering", "prompt_file": str(prompts_dir / "rank_ordering_explain.txt"), "n_tokens": 5},
             ],
         }
         config_dir = tmp_path / "config_skip"
@@ -648,7 +648,7 @@ class TestLoadExperimentConfig:
 
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
-        for fname in ["h.txt", "r.txt", "cf.txt", "ro.txt"]:
+        for fname in ["h_explain.txt", "r_explain.txt", "cf_explain.txt", "ro_explain.txt"]:
             (prompts_dir / fname).write_text("prompt")
 
         config = load_experiment_config(config_dir)
@@ -677,7 +677,7 @@ class TestLoadExperimentConfig:
 
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
-        for fname in ["h.txt", "r.txt", "cf.txt", "ro.txt"]:
+        for fname in ["h_explain.txt", "r_explain.txt", "cf_explain.txt", "ro_explain.txt"]:
             (prompts_dir / fname).write_text("prompt")
 
         config = load_experiment_config(config_dir)
@@ -705,7 +705,7 @@ class TestLoadExperimentConfig:
 
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
-        for fname in ["h.txt", "r.txt", "cf.txt", "ro.txt"]:
+        for fname in ["h_explain.txt", "r_explain.txt", "cf_explain.txt", "ro_explain.txt"]:
             (prompts_dir / fname).write_text("prompt")
 
         config = load_experiment_config(config_dir)
@@ -725,7 +725,7 @@ class TestConfigValidatorExtra:
     def test_strategy_name_required(self, tmp_path):
         prompts_dir = tmp_path / "prompts_e"
         prompts_dir.mkdir()
-        for fname in ["h.txt", "r.txt", "cf.txt", "ro.txt"]:
+        for fname in ["h_explain.txt", "r_explain.txt", "cf_explain.txt", "ro_explain.txt"]:
             (prompts_dir / fname).write_text("prompt")
         config = Config(
             experiment=ExperimentConfig(name="test", version="1.0"),
@@ -733,10 +733,10 @@ class TestConfigValidatorExtra:
             models=[ModelConfig(name="llama", model_id="llama")],
             inference=InferenceConfig(),
             explanation_strategies=[
-                ExplanationStrategyConfig(id="H", name="h", prompt_file=str(prompts_dir / "h.txt"), n_tokens=3),
-                ExplanationStrategyConfig(id="R", name="r", prompt_file=str(prompts_dir / "r.txt")),
-                ExplanationStrategyConfig(id="CF", name="cf", prompt_file=str(prompts_dir / "cf.txt")),
-                ExplanationStrategyConfig(id="RO", name="", prompt_file=str(prompts_dir / "ro.txt"), n_tokens=5),
+                ExplanationStrategyConfig(id="H", name="h", prompt_file=str(prompts_dir / "h_explain.txt"), n_tokens=3),
+                ExplanationStrategyConfig(id="R", name="r", prompt_file=str(prompts_dir / "r_explain.txt")),
+                ExplanationStrategyConfig(id="CF", name="cf", prompt_file=str(prompts_dir / "cf_explain.txt")),
+                ExplanationStrategyConfig(id="RO", name="", prompt_file=str(prompts_dir / "ro_explain.txt"), n_tokens=5),
             ],
             normalization=NormalizationConfig(),
             metrics=MetricsConfig(),
@@ -779,15 +779,15 @@ class TestLoadAndValidateConfigExtra:
             "datasets": [{"name": "sst2", "huggingface_id": "stanfordnlp/sst2", "split": "v", "sample_size": 100, "labels": ["a", "b"]}],
             "models": [{"name": "llama", "model_id": "llama-3.3-70b"}],
             "explanation_strategies": [
-                {"id": "H", "name": "h", "prompt_file": str(tmp_path / "prompts/h.txt"), "n_tokens": 3},
-                {"id": "R", "name": "r", "prompt_file": str(tmp_path / "prompts/r.txt")},
-                {"id": "CF", "name": "cf", "prompt_file": str(tmp_path / "prompts/cf.txt")},
-                {"id": "RO", "name": "ro", "prompt_file": str(tmp_path / "prompts/ro.txt"), "n_tokens": 5},
+                {"id": "H", "name": "h", "prompt_file": str(tmp_path / "prompts/h_explain.txt"), "n_tokens": 3},
+                {"id": "R", "name": "r", "prompt_file": str(tmp_path / "prompts/r_explain.txt")},
+                {"id": "CF", "name": "cf", "prompt_file": str(tmp_path / "prompts/cf_explain.txt")},
+                {"id": "RO", "name": "ro", "prompt_file": str(tmp_path / "prompts/ro_explain.txt"), "n_tokens": 5},
             ],
         }
         prompts_dir = tmp_path / "prompts"
         prompts_dir.mkdir()
-        for fname in ["h.txt", "r.txt", "cf.txt", "ro.txt"]:
+        for fname in ["h_explain.txt", "r_explain.txt", "cf_explain.txt", "ro_explain.txt"]:
             (prompts_dir / fname).write_text("prompt")
         with open(config_dir / "experiment.yaml", "w") as f:
             yaml.dump(exp_yaml, f)

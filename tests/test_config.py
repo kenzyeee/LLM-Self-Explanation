@@ -53,7 +53,6 @@ class TestModelConfig:
         cfg = ModelConfig(name="llama", model_id="llama-3.3-70b-versatile")
         assert cfg.context_window == 8192
         assert cfg.default_temperature == 0.0
-        assert cfg.supports_function_calling is False
 
     def test_to_dict(self):
         cfg = ModelConfig(name="llama", model_id="llama-3.3-70b-versatile")
@@ -77,7 +76,7 @@ class TestInferenceConfig:
 
 class TestExplanationStrategyConfig:
     def test_minimal(self):
-        cfg = ExplanationStrategyConfig(id="H", name="highlighting", prompt_file="prompts/highlighting.txt")
+        cfg = ExplanationStrategyConfig(id="H", name="highlighting", prompt_file="prompts/highlighting_explain.txt")
         assert cfg.n_tokens is None
 
     def test_with_ntokens(self):
@@ -112,7 +111,8 @@ class TestMetricsConfig:
     def test_defaults(self):
         cfg = MetricsConfig()
         assert cfg.bootstrap_iterations == 1000
-        assert cfg.bonferroni_correction is True
+        assert cfg.correction == "holm"
+        assert cfg.min_n_for_test == 6
 
     def test_to_dict(self):
         cfg = MetricsConfig(bootstrap_iterations=500)
@@ -135,7 +135,7 @@ class TestValidityConfig:
 class TestAblationsConfig:
     def test_defaults(self):
         cfg = AblationsConfig()
-        assert cfg.highlighting_k_values == [2, 3, 5]
+        assert cfg.prompt_variants is True
         assert cfg.subset_size == 50
 
     def test_to_dict(self):

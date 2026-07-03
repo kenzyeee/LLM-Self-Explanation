@@ -100,7 +100,9 @@ class TestParseHighlighting:
         )
         assert len(result) == 2
         assert "great" in result
-        assert "amazing" in result
+        # H tokens are returned in the shared normalized token space (v3.0 lemmas):
+        # "amazing" -> "amaze"
+        assert "amaze" in result
 
     def test_too_few_valid_raises(self, parser, normalizer):
         with pytest.raises(Exception):
