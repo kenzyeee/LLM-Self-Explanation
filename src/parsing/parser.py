@@ -250,7 +250,13 @@ class Parser:
             seen = set()
             for raw_tok in rationale.split():
                 tok = raw_tok.strip(string.punctuation).lower()
-                if not tok or len(tok) <= 1 or tok in STOPWORDS or tok in DISCOURSE_WORDS:
+                if not tok:
+                    continue
+                # Keep polarity words (incl. contracted negations) even though NLTK's
+                # stopword list contains them — the same carve-out the spaCy path and the
+                # normalizer apply (review §8.4/P1.2). Negation is label-critical on NLI;
+                # dropping it in this fallback was a latent evidence-space asymmetry.
+                if tok not in POLARITY_WORDS and (len(tok) <= 1 or tok in STOPWORDS or tok in DISCOURSE_WORDS):
                     continue
                 if tok in seen:
                     continue

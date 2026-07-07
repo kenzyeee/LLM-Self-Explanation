@@ -22,7 +22,9 @@ def analyze_results(results_dir: str) -> None:
 
     instance_file = results_path / "instance_results.jsonl"
     aggregate_file = results_path / "aggregate_metrics.json"
-    validity_file = results_path / "validity_tests.jsonl"
+    # The erasure pass (scripts/run_validity_tests.py) writes aggregate_erasure.json;
+    # the old validity_tests.jsonl file was retired with the deleted Validity_Checker.
+    erasure_file = results_path / "aggregate_erasure.json"
 
     if instance_file.exists():
         instances = load_instance_results(str(instance_file))
@@ -54,18 +56,20 @@ def analyze_results(results_dir: str) -> None:
         for agg in aggregates:
             logger.info(f"  {agg.aggregation_level}={agg.group_name}: n={agg.n_instances}, mean_ECS={agg.mean_ecs:.4f}")
 
-    if validity_file.exists():
-        from src.utils.data_models import load_validity_results
-        validity = load_validity_results(str(validity_file))
-        logger.info(f"Loaded {len(validity)} validity test results")
-
-        cc3_flipped = sum(1 for r in validity if r.cc3_flipped)
-        random_flipped = sum(1 for r in validity if r.random_flipped)
-        n_cc3 = sum(1 for r in validity if r.cc3_tokens)
-        n_random = sum(1 for r in validity if r.random_tokens)
-
-        logger.info(f"CC3 flip rate:   {cc3_flipped}/{n_cc3} ({cc3_flipped/max(n_cc3,1)*100:.1f}%)")
-        logger.info(f"Random flip rate:{random_flipped}/{n_random} ({random_flipped/max(n_random,1)*100:.1f}%)")
+    if erasure_file.exists():
+        import json
+        with open(erasure_file, encoding="utf-8") as f:
+            erasure = json.load(f)
+        overall = erasure.get("pooled", {}).get("overall", {})
+        operators = overall.get("operators", [])
+        logger.info("Erasure pass (second consistency axis — pooled, descriptive):")
+        for op in operators:
+            cc = overall.get("cc3_flip_rate", {}).get(op)
+            rnd = overall.get("random_flip_rate", {}).get(op)
+            gap = overall.get("cc3_minus_random", {}).get(op)
+            def _fmt(x):
+                return f"{x:.3f}" if isinstance(x, (int, float)) else "—"
+            logger.info(f"  [{op}] CC3 flip={_fmt(cc)}  random={_fmt(rnd)}  gap={_fmt(gap)}")
 
 
 def print_instance(results_dir: str, instance_id: str) -> None:

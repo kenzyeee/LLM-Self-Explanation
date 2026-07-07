@@ -5,7 +5,6 @@ import json
 import logging
 import random
 import re
-import string
 import sys
 import time
 import uuid
@@ -633,13 +632,26 @@ async def process_instance(
 
     n_valid = sum(1 for s in STRATEGY_IDS if valid_flags.get(s, False))
 
-    # Vocabulary size from normalized input text (content-word unique tokens only)
+    # Vocabulary size in the SAME normalized token space the evidence sets live in
+    # (review P0.1): both nulls (uniform expected_random_overlap and the exact
+    # hypergeometric expected_jaccard_exact behind ecs_adj) model "random draws from
+    # the vocabulary the strategies select from", so V must be counted over normalized
+    # content lemmas — stopwords/discourse removed, polarity kept, lemmatized to the
+    # fixed point — NOT raw surface words. Counting surface words inflated V ~1.4-1.9x
+    # (dataset-differentially), mis-centering every chance correction (ecs_random/
+    # ecs_lift and ecs_adj's E[J]) and making the pre-registered lift test
+    # anti-conservative. STRUCTURAL_LABELS are excluded explicitly (they also happen to
+    # be DISCOURSE_WORDS the normalizer drops, but the guard keeps intent visible).
     input_tokens = normalizer.normalize_input_text(clean_text).split()
     STRUCTURAL_LABELS = {"premise:", "hypothesis:", "sentence1:", "sentence2:", "text:", "label:"}
-    content_tokens = [t for t in input_tokens if t not in STRUCTURAL_LABELS and
-                      t.strip(string.punctuation) and
-                      t not in string.punctuation]
-    vocab_size = len(set(content_tokens))
+    vocab_tokens = set()
+    for t in input_tokens:
+        if t in STRUCTURAL_LABELS:
+            continue
+        norm = normalizer.normalize(t)
+        if norm:
+            vocab_tokens.add(norm)
+    vocab_size = len(vocab_tokens)
     SHORT_VOCAB_THRESHOLD = 20
     short_vocab = vocab_size <= SHORT_VOCAB_THRESHOLD
 
@@ -795,6 +807,7 @@ async def process_instance(
         rationale_tokens=parsed_tokens.get("R", set()),
         counterfactual_tokens=parsed_tokens.get("CF", set()),
         rank_ordering_tokens=ro_ranked,
+        rank_ordering_set=ro_set,
         highlighting_parsed=parsed_flags.get("H", False),
         rationale_parsed=parsed_flags.get("R", False),
         counterfactual_parsed=parsed_flags.get("CF", False),
@@ -892,7 +905,8 @@ async def process_instance(
     return result
 
 
-def compute_free_cf_sensitivity_ecs(results: List[InstanceResult], calc: MetricsCalculator) -> Tuple[float, int]:
+def compute_free_cf_sensitivity_ecs(results: List[InstanceResult], calc: MetricsCalculator,
+                                    normalizer: Optional[Normalizer] = None) -> Tuple[float, int]:
     """Sensitivity analysis (review P1.1): ECS recomputed with cf_contrast_tokens (the
     unconstrained/free CF rewrite — ~82% validity in the pilot) substituted for the
     canonical minimal-CF evidence (~28% validity, gated on counterfactual_valid) in
@@ -903,15 +917,30 @@ def compute_free_cf_sensitivity_ecs(results: List[InstanceResult], calc: Metrics
     NHST-tested, and NOT used for complete-case selection anywhere else — minimal-CF
     ECS remains primary precisely because minimality is part of the CF construct
     (MiCE); this analysis exists to show the alternative doesn't overturn the story.
+
+    cf_contrast_tokens are stored as RAW edited surface words (the difflib diff output),
+    so they MUST be projected into the shared normalized token space before Jaccarding
+    them against H/R/RO — which are already normalized (review §8.3/P0.4). Comparing raw
+    surface tokens (retaining stopwords/inflections the other sets can never contain)
+    against normalized sets structurally deflates every free-CF pair, which would falsely
+    read as "conclusions don't survive without the minimal-edit gate" — the opposite of
+    this check's purpose. The normalizer defaults to the v3.0 shared-space settings.
     """
+    if normalizer is None:
+        normalizer = Normalizer()
     values = []
     for r in results:
         if not (r.highlighting_valid and r.rationale_valid and r.rank_ordering_valid
                 and r.cf_contrast_valid and r.cf_contrast_tokens):
             continue
-        ro_set = {t for t, _ in r.rank_ordering_tokens}
+        cf_set = normalizer.normalize_tokens(list(r.cf_contrast_tokens))
+        if not cf_set:
+            continue
+        # Use the SAME top-k RO evidence set primary ECS used (review P1.1), falling
+        # back to the full ranked set for legacy records without rank_ordering_set.
+        ro_set = r.rank_ordering_set or {t for t, _ in r.rank_ordering_tokens}
         explanations = {"H": r.highlighting_tokens, "R": r.rationale_tokens,
-                        "CF": r.cf_contrast_tokens, "RO": ro_set}
+                        "CF": cf_set, "RO": ro_set}
         agreements = calc.compute_pairwise_agreements(explanations)
         ecs = calc.compute_ecs(agreements)
         if ecs is not None:
@@ -921,7 +950,8 @@ def compute_free_cf_sensitivity_ecs(results: List[InstanceResult], calc: Metrics
 
 
 def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: str,
-                               sampling_log: Optional[SamplingLog] = None) -> AggregateMetrics:
+                               sampling_log: Optional[SamplingLog] = None,
+                               normalizer: Optional[Normalizer] = None) -> AggregateMetrics:
     import numpy as np
 
     ecs_values = [r.ecs for r in results if r.ecs is not None]
@@ -985,7 +1015,7 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
 
     # Free-CF sensitivity analysis (review P1.1): descriptive robustness check, zero
     # extra API cost — see compute_free_cf_sensitivity_ecs's docstring.
-    _free_cf_ecs, _n_free_cf = compute_free_cf_sensitivity_ecs(results, MetricsCalculator())
+    _free_cf_ecs, _n_free_cf = compute_free_cf_sensitivity_ecs(results, MetricsCalculator(), normalizer)
 
     # Stratify by length
     length_data = MetricsCalculator.compute_length_stratified_ecs(results)
@@ -1306,7 +1336,8 @@ async def _run_model_on_dataset(model_config, instances, prompts, dataset_config
         wrong_predictions=wrong_pred_count,
     )
     agg = compute_aggregate_metrics(
-        model_results, "model_dataset", f"{model_config.name}_{dataset_name}", sampling_log=model_slog
+        model_results, "model_dataset", f"{model_config.name}_{dataset_name}", sampling_log=model_slog,
+        normalizer=normalizer,
     )
 
     return {
@@ -1490,7 +1521,8 @@ async def run_experiment(config, args):
             sampled=sum(s.sampled for s in sampling_logs),
             wrong_predictions=sum(s.wrong_predictions for s in sampling_logs),
         )
-        overall = compute_aggregate_metrics(all_results, "overall", "all", sampling_log=overall_slog)
+        overall = compute_aggregate_metrics(all_results, "overall", "all", sampling_log=overall_slog,
+                                            normalizer=normalizer)
         aggregate_list.append(overall)
 
     # Pure dataset-level aggregates
@@ -1498,14 +1530,15 @@ async def run_experiment(config, args):
     for ds in dataset_names:
         ds_results = [r for r in all_results if r.dataset == ds]
         ds_slog = next((s for s in sampling_logs if s.dataset == ds), None)
-        agg = compute_aggregate_metrics(ds_results, "dataset", ds, sampling_log=ds_slog)
+        agg = compute_aggregate_metrics(ds_results, "dataset", ds, sampling_log=ds_slog,
+                                        normalizer=normalizer)
         aggregate_list.append(agg)
 
     # Pure model-level aggregates
     model_names = set(r.model for r in all_results)
     for mn in model_names:
         md_results = [r for r in all_results if r.model == mn]
-        agg = compute_aggregate_metrics(md_results, "model", mn)
+        agg = compute_aggregate_metrics(md_results, "model", mn, normalizer=normalizer)
         aggregate_list.append(agg)
 
     # Pre-registered NHST family (a): per model×dataset cell, is mean ECS-lift > 0?

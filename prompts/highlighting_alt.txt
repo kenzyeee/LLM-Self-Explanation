@@ -1,8 +1,8 @@
 The text was classified as: {predicted_label}
 
-Identify the 3 single words from the text below that are most important for determining its category ({label_set}).
+For the text below, rate how much each word contributed to classifying it into {label_set}. Score every word from 1 (no contribution) to 10 (decisive), copying each word exactly as it appears, in order. Include every occurrence, even repeated words.
 
 Text: "{input_text}"
 
 Return only valid JSON:
-{{"highlights":["token1","token2","token3"]}}
+{{"salience": [["word", score], ["word", score]]}}
