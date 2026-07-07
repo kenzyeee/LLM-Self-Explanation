@@ -163,20 +163,3 @@ class TestIntegration:
         )
         assert len(remaining) == 1
         assert remaining[0].instance_id == "3"
-
-    def test_paper_generator(self, tmp_path):
-        from src.paper.paper_generator import PaperGenerator
-
-        results = {"mean_ecs": 0.35, "datasets": ["sst2", "mnli", "ag_news"]}
-        config = {"experiment": {"name": "test"}}
-
-        gen = PaperGenerator(results=results, config=config)
-        output = tmp_path / "draft_paper.tex"
-        gen.generate_paper(output)
-
-        assert output.exists()
-        content = output.read_text()
-        assert "\\begin{document}" in content
-        assert "\\section{Methodology}" in content
-        assert "\\section{Results}" in content
-        assert "\\begin{abstract}" in content

@@ -408,9 +408,12 @@ class TestFreeCfSensitivityEcs:
 
     def test_multiple_instances_averaged(self):
         from src.metrics.metrics_calculator import MetricsCalculator
+        # Tokens must be content words that survive normalization: cf_contrast_tokens
+        # are now projected into the normalized space before comparison (P0.4), and
+        # single-letter/stopword tokens ("a") would normalize away to an empty CF set.
         results = [
-            _free_cf_result("i0", h={"a"}, r={"a"}, cf_free={"a"}, ro=["a"]),
-            _free_cf_result("i1", h={"b"}, r={"c"}, cf_free={"d"}, ro=["e"]),  # no overlap anywhere
+            _free_cf_result("i0", h={"great"}, r={"great"}, cf_free={"great"}, ro=["great"]),
+            _free_cf_result("i1", h={"movie"}, r={"acting"}, cf_free={"awful"}, ro=["boring"]),  # no overlap anywhere
         ]
         mean, n = rx.compute_free_cf_sensitivity_ecs(results, MetricsCalculator())
         assert n == 2

@@ -75,11 +75,21 @@ def erase(text: str, tokens: Set[str], operator: str, normalizer: Optional[Norma
 
     operator="mask" -> replace with [MASK]; operator="delete" -> drop entirely.
     Matching is case-insensitive on the punctuation-stripped surface word. With a
-    normalizer, a word also matches if it shares a WordNet lemma with a token to
-    erase — the same morphology-aware criterion Normalizer.is_anchored used to
-    anchor evidence to the input in the first place. Without this, an evidence
-    lemma ("movie") silently fails to erase an inflected input occurrence
-    ("movies"), understating flip rates for every strategy/CC/random comparison.
+    normalizer, a word also matches under two morphology-aware criteria:
+
+      1. Shared single-pass WordNet lemma with a token to erase (the same criterion
+         Normalizer.is_anchored used to anchor evidence to the input) — handles simple
+         inflection, e.g. evidence "movie" erasing the input occurrence "movies".
+      2. Full FIXED-POINT normalization equality (review P0.3): normalization v3.0
+         lemmatizes to a fixed point that can take >=2 WordNet passes ("grounds" ->
+         "grind", "pass" -> "pa"), and evidence tokens are stored ALREADY fixed-point
+         normalized. A single-pass anchor-lemma set for the input word ({"grounds",
+         "ground"}) never intersects the evidence token ("grind"), so criterion 1
+         alone silently skips exactly these tokens — understating CC/strategy flip
+         rates in the headline instrument while the random control (which erases the
+         surface words it sampled) is unaffected, biasing the paired CC-vs-random gap.
+         Re-normalizing the input word the SAME way the evidence token was produced
+         and comparing for equality closes that gap.
     """
     toks = {t.lower() for t in tokens}
     lemma_pool = set()
@@ -92,6 +102,9 @@ def erase(text: str, tokens: Set[str], operator: str, normalizer: Optional[Norma
         is_match = bool(clean) and clean in toks
         if not is_match and normalizer is not None and clean:
             is_match = bool(normalizer._anchor_lemmas(clean) & lemma_pool)
+        if not is_match and normalizer is not None and clean:
+            norm = normalizer.normalize(clean)
+            is_match = norm is not None and norm in toks
         if is_match:
             if operator == "mask":
                 out.append(mask_token)
@@ -158,6 +171,11 @@ async def random_flip_rate(engine, parser, class_prompt, text, n, operator,
 
 
 def _ro_tokens(data: Dict[str, Any]) -> List[str]:
+    # Prefer the top-k RO evidence set ECS scored (review P1.1); fall back to the full
+    # ranked list for legacy records that predate rank_ordering_set.
+    ro_set = data.get("rank_ordering_set")
+    if ro_set:
+        return list(ro_set)
     return [t for t, _ in data.get("rank_ordering_tokens", [])]
 
 

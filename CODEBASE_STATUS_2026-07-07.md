@@ -1,5 +1,28 @@
 # Codebase Status & Audit — 2026-07-07
 
+> ## ✅ RESOLUTION UPDATE (2026-07-07, applied)
+> The fixes below have since been **implemented and verified** (suite green at 589 tests):
+> - **P0.1** vocab_size now counted in the normalized lemma space (`run_experiment.py`).
+> - **P0.2** prompt-paraphrase ablation repaired — `highlighting_alt.txt`/`counterfactual_alt.txt`
+>   rewritten to the canonical `salience`/`rewritten` schemas, R now extracts evidence
+>   (`skip_validation=False`), ablation reads the frozen curated sets, H gets a length-proportional
+>   budget, results JSON is written before the (fixed) plot.
+> - **P0.3** erasure `erase()` now matches multi-step fixed-point lemmas (`grounds`→`grind`, `pass`→`pa`).
+> - **P0.4** free-CF sensitivity normalizes contrast tokens before Jaccarding against H/R/RO.
+> - **P1**: top-k RO evidence set is persisted (`rank_ordering_set`) and used by the erasure/cross-model/
+>   free-CF consumers; no-spaCy rationale fallback keeps polarity/negation; `analyze_results.py` reads
+>   `aggregate_erasure.json` instead of the retired `validity_tests.jsonl`.
+> - **Legacy ECS deprecated (Decision D1):** ECS-adj is now the PRIMARY estimand and its sign-flip test is
+>   pre-registered family (a) in `report.md` and `show_results.py`; legacy ECS/lift is labeled DEPRECATED.
+> - **Cleanup/deletions:** `.kiro/` specs, `scripts/check_failures.py`, `scripts/generate_paper.py`,
+>   `src/paper/` (+ its test) removed; `tiktoken` and an orphaned `import string` removed; README setup
+>   (spaCy model, boto3) and test count corrected. The plan/review markdown docs are KEPT — code comments
+>   cite them by name (e.g. `ECS_ROBUSTNESS_PLAN_2026-07-05.md §3.5`).
+>
+> Still deliberately NOT changed (researcher launch decisions, not bugs): **D2** config flip
+> (`sample_size: 200`, drop `-pilot`) and running the smokes/main/erasure passes. The sections below are
+> retained as the original audit record.
+
 **Scope:** full audit of `src/`, `scripts/`, `prompts/`, `config/`, tests, and data artifacts at commit `465cb3f` ("Changes to ECS"), cross-checked against the review trail (`REVIEW_strict_reviewer_2026-07.md`, `FIX_PLAN_2026-07-02.md`, `IMPROVEMENT_PLAN_2026-07-04.md`, `ECS_ROBUSTNESS_PLAN_2026-07-05.md`, `ECS_ADJ_PILOT_RESCORE_2026-07-06.md`) and verified empirically against the pilot run `outputs/20260703_124843_013dd120` (N=90).
 
 **Verdict in one line:** the collection pipeline, metrics, erasure pass, statistics, and provenance machinery are complete, previously-reported defects are genuinely fixed, and the suite is green (590/590) — but **four data-corrupting defects remain (P0 below), the one pre-registered ablation is broken in 3 of its 4 arms, and the ECS-adj adoption decision is unrecorded**. Fix the P0 list and record the two decisions, and the codebase is ready for the 200×3×3 production run.

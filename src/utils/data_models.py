@@ -57,6 +57,13 @@ class InstanceResult:
     rationale_tokens: Set[str] = field(default_factory=set)
     counterfactual_tokens: Set[str] = field(default_factory=set)
     rank_ordering_tokens: List[Tuple[str, int]] = field(default_factory=list)
+    # The length-proportional top-k RO evidence set actually used in ECS (review P1.1).
+    # rank_ordering_tokens above is the FULL normalized ranked list (kept for Kendall
+    # τ / RBO); the consumers that rebuild RO evidence for the erasure pass, cross-model
+    # agreement, and the free-CF sensitivity must use THIS top-k set so their RO
+    # construct matches the one ECS scored — not the full list. Empty on legacy records,
+    # where consumers fall back to deriving the set from rank_ordering_tokens.
+    rank_ordering_set: Set[str] = field(default_factory=set)
     highlighting_parsed: bool = False
     rationale_parsed: bool = False
     counterfactual_parsed: bool = False
@@ -174,6 +181,7 @@ class InstanceResult:
                 'rationale_tokens': sorted(list(self.rationale_tokens)),
                 'counterfactual_tokens': sorted(list(self.counterfactual_tokens)),
                 'rank_ordering_tokens': [[token, rank] for token, rank in self.rank_ordering_tokens],
+                'rank_ordering_set': sorted(list(self.rank_ordering_set)),
                 'highlighting_parsed': self.highlighting_parsed, 'rationale_parsed': self.rationale_parsed,
                 'counterfactual_parsed': self.counterfactual_parsed, 'rank_ordering_parsed': self.rank_ordering_parsed,
                 'highlighting_valid': self.highlighting_valid, 'rationale_valid': self.rationale_valid,
@@ -255,6 +263,7 @@ class InstanceResult:
             rationale_tokens=set(data['rationale_tokens']),
             counterfactual_tokens=set(data['counterfactual_tokens']),
             rank_ordering_tokens=[(token, rank) for token, rank in data['rank_ordering_tokens']],
+            rank_ordering_set=set(data.get('rank_ordering_set', [])),
             highlighting_parsed=data.get('highlighting_parsed', False), rationale_parsed=data.get('rationale_parsed', False),
             counterfactual_parsed=data.get('counterfactual_parsed', False), rank_ordering_parsed=data.get('rank_ordering_parsed', False),
             highlighting_valid=data.get('highlighting_valid', False), rationale_valid=data.get('rationale_valid', False),
@@ -742,13 +751,42 @@ def generate_md_report(
     # footnote rather than being silently indistinguishable from a well-powered cell.
     min_n = getattr(getattr(config, "metrics", None), "min_n_for_test", 6)
     if model_dataset:
+        # PRIMARY estimand: complete-case ECS-adj per cell (Decision D1, 2026-07-07 —
+        # ECS-adj adopted as the primary estimand after its validation gates passed;
+        # legacy ECS is DEPRECATED and shown below for comparison only). Per-cell IS the
+        # primary reporting unit — the pooled number averages over a non-random cell mix
+        # when CF validity varies across cells (a reviewer-fatal confound if only the
+        # pooled number is shown). Cells below min_n_for_test show the estimate with a
+        # footnote rather than being silently indistinguishable from a well-powered cell.
         lines.append("")
-        lines.append(f"### Complete-Case ECS by Cell (N={min_n} minimum — primary estimand)")
+        lines.append(f"### Complete-Case ECS-adj by Cell (N={min_n} minimum — PRIMARY estimand)")
         lines.append("")
-        lines.append("Instances where H, R, CF, and RO all produced valid evidence, per model×dataset "
-                     "cell. This is the primary estimand at scale — the pooled number above mixes cells "
-                     "whose CF validity (and therefore complete-case membership) can differ by an order "
-                     "of magnitude, so pooling alone is not a safe substitute for this table.")
+        lines.append("Chance- and ceiling-adjusted, paradigm-balanced ECS-adj over instances where all "
+                     "three paradigm components are defined, per model×dataset cell. This is the primary "
+                     "estimand at scale; the pooled number mixes cells whose complete-case membership can "
+                     "differ by an order of magnitude, so pooling alone is not a safe substitute for it.")
+        lines.append("")
+        lines.append("| Model | Dataset | Complete cases | Mean ECS-adj (complete) |")
+        lines.append("|-------|---------|-----------------|--------------------------|")
+        for md in model_dataset:
+            parts = md.group_name.split("_", 1)
+            ds = parts[1] if len(parts) > 1 else md.group_name
+            model_label = parts[0] if len(parts) > 1 else "—"
+            if md.n_ecs_adj_complete < min_n:
+                lines.append(f"| {model_label} | {ds} | {md.n_ecs_adj_complete}/{md.n_instances} "
+                             f"(below N={min_n}) | {md.mean_ecs_adj_complete:.4f}* |")
+            else:
+                lines.append(f"| {model_label} | {ds} | {md.n_ecs_adj_complete}/{md.n_instances} | "
+                             f"{md.mean_ecs_adj_complete:.4f} |")
+        lines.append("")
+        lines.append(f"*Estimate shown, not a well-powered cell (fewer than {min_n} complete cases).*")
+
+        lines.append("")
+        lines.append(f"### Complete-Case ECS by Cell (N={min_n} minimum — legacy ECS, DEPRECATED)")
+        lines.append("")
+        lines.append("Legacy flat 5-pair-mean ECS over instances where H, R, CF, and RO all produced "
+                     "valid evidence, per model×dataset cell. **Deprecated** (superseded by the ECS-adj "
+                     "table above); retained for comparison with earlier reports only.")
         lines.append("")
         lines.append("| Model | Dataset | Complete cases | Mean ECS (complete) |")
         lines.append("|-------|---------|-----------------|----------------------|")
@@ -837,12 +875,13 @@ def generate_md_report(
                      "reporting unit is the model×dataset cell (tables below): pooled numbers mix "
                      "heterogeneous tasks and models, and their bootstrap CI resamples instance "
                      "clusters (the same instance appears under every model). At scale, "
-                     "**complete-case ECS is the primary estimand** — partial-case ECS averages "
+                     "**complete-case ECS-adj is the primary estimand** (Decision D1); legacy ECS "
+                     "below is **deprecated**, retained for comparison. Partial-case composites average "
                      "whichever pairs survived, which changes the construct per instance.")
         lines.append("")
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
-        lines.append(f"| **Mean ECS (complete cases, N={overall.n_complete_cases}) — primary estimand** | {overall.mean_ecs_complete:.4f} |")
+        lines.append(f"| Mean ECS (complete cases, N={overall.n_complete_cases}) — DEPRECATED (legacy) | {overall.mean_ecs_complete:.4f} |")
         lines.append(f"| Complete cases | {overall.n_complete_cases}/{overall.n_instances} ({overall.pct_complete_cases:.0f}%) |")
         _n_ecs = sum(1 for r in all_results if r.ecs is not None)
         lines.append(f"| Mean ECS (all with ≥3 valid, N={_n_ecs}) | {overall.mean_ecs:.4f} |")
@@ -862,19 +901,19 @@ def generate_md_report(
                 lines.append(f"  → ... and {len(reduced_primary)-5} more")
         lines.append(f"| Std ECS | {overall.std_ecs:.4f} |")
         lines.append(f"| Median ECS | {overall.median_ecs:.4f} |")
-        lines.append(f"| **Mean ECS lift over chance** (ECS − uniform random) | {overall.mean_ecs_lift:+.4f} |")
+        lines.append(f"| Mean ECS lift over chance (ECS − uniform random) — DEPRECATED (legacy) | {overall.mean_ecs_lift:+.4f} |")
         lines.append(f"| Mean ECS random baseline (uniform) | {overall.mean_ecs_random:.4f} |")
-        lines.append(f"| Mean ECS lift over salience-weighted null (secondary, N={overall.n_lift_weighted}) | {overall.mean_ecs_lift_weighted:+.4f} |")
+        lines.append(f"| Mean ECS lift over salience-weighted null (legacy secondary, N={overall.n_lift_weighted}) | {overall.mean_ecs_lift_weighted:+.4f} |")
         lines.append("")
-        lines.append("> **ECS-adj** (ECS_ROBUSTNESS_PLAN_2026-07-05.md): chance- AND ceiling-adjusted, "
-                     "paradigm-balanced replacement for the flat 5-pair-mean ECS above — 0 = chance, "
-                     "1 = maximum agreement achievable given each pair's set sizes. Adopted only on "
-                     "simulation/pilot-rescore evidence (plan §6), reported alongside legacy ECS "
-                     "during the validation window.")
+        lines.append("> **ECS-adj** (ECS_ROBUSTNESS_PLAN_2026-07-05.md) — the **PRIMARY** consensus "
+                     "estimand (Decision D1, 2026-07-07): chance- AND ceiling-adjusted, paradigm-balanced, "
+                     "replacing the deprecated flat 5-pair-mean ECS above. 0 = chance, 1 = maximum "
+                     "agreement achievable given each pair's set sizes. Adopted after its validation gates "
+                     "passed (planted-agreement simulation, pilot rescore, property tests — plan §6).")
         lines.append("")
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
-        lines.append(f"| **Mean ECS-adj (complete cases, N={overall.n_ecs_adj_complete}) — candidate primary estimand** | {overall.mean_ecs_adj_complete:.4f} |")
+        lines.append(f"| **Mean ECS-adj (complete cases, N={overall.n_ecs_adj_complete}) — PRIMARY estimand** | {overall.mean_ecs_adj_complete:.4f} |")
         lines.append(f"| Mean ECS-adj (available-component, N={overall.n_ecs_adj}) | {overall.mean_ecs_adj:.4f} |")
         lines.append(f"| Mean ECS-adj E-R (extraction-rationalization) | {overall.mean_ecs_adj_er:.4f} |")
         lines.append(f"| Mean ECS-adj E-P (extraction-perturbation) | {overall.mean_ecs_adj_ep:.4f} |")
@@ -882,14 +921,13 @@ def generate_md_report(
         lines.append(f"| Degenerate pairs (J_max - E[J] < eps) | {overall.n_degenerate_pairs_total} |")
         lines.append("")
         lines.append("> **Significance testing: pre-registered tests only.** Exactly two test families "
-                     "run (FIX_PLAN §P1.3): (a) sign-flip permutation on per-instance ECS-lift per "
-                     "model×dataset cell, Holm-corrected across cells — results in the table below; "
-                     "(b) CC-erasure vs random control in the separate erasure pass. Every other "
-                     "number in this report — strata, splits, contrasts — is descriptive, and cells "
-                     "below the configured minimum N report estimates without a test. A parallel "
-                     "sign-flip test on mean(ECS-adj) > 0 (null=0 by construction, plan §3.5) is also "
-                     "computed alongside (a) — descriptive/candidate only until the Phase B validation "
-                     "gate (plan §6) adopts ECS-adj as the primary estimand, not yet a substitute for it.")
+                     "run: (a) sign-flip permutation on per-instance ECS-adj > 0 (null=0 by construction, "
+                     "plan §3.5) per model×dataset cell, Holm-corrected across cells — the PRIMARY test "
+                     "(Decision D1), results in the ECS-adj table below; (b) CC-erasure vs random control "
+                     "in the separate erasure pass. Every other number in this report — strata, splits, "
+                     "contrasts — is descriptive, and cells below the configured minimum N report "
+                     "estimates without a test. The legacy sign-flip test on mean ECS-lift > 0 is "
+                     "**deprecated**, retained below for comparison with earlier reports only.")
         lines.append("")
         lines.append("| Metric | Value |")
         lines.append("|--------|-------|")
@@ -921,11 +959,12 @@ def generate_md_report(
                      "ground truth; its headline is Consensus-Core erasure vs. a same-size random control, by ECS-lift tier.")
 
         lines.append("")
-        lines.append("### Pre-registered test (a): mean ECS-lift > 0, per model×dataset cell")
+        lines.append("### Legacy test (DEPRECATED): mean ECS-lift > 0, per model×dataset cell")
         lines.append("")
         lines.append("One-sided sign-flip permutation on per-instance (ECS − ECS_random) differences; "
                      "Holm-corrected across this run's cells. `—` = cell below the configured minimum N "
-                     "for testing (estimate reported, test skipped).")
+                     "for testing (estimate reported, test skipped). **Deprecated** — superseded by the "
+                     "ECS-adj test below (Decision D1); retained for comparison with earlier reports only.")
         lines.append("")
         lines.append("| Model | Dataset | N (lift) | Mean lift | p (raw) | p (Holm) |")
         lines.append("|-------|---------|----------|-----------|---------|----------|")
@@ -938,12 +977,12 @@ def generate_md_report(
             lines.append(f"| {model_label} | {ds} | {md.n_lift} | {md.mean_ecs_lift:+.4f} | {p_raw} | {p_holm} |")
 
         lines.append("")
-        lines.append("### Candidate test: mean ECS-adj > 0, per model×dataset cell (descriptive)")
+        lines.append("### Pre-registered test (a): mean ECS-adj > 0, per model×dataset cell (PRIMARY)")
         lines.append("")
-        lines.append("Same sign-flip machinery applied directly to per-instance ECS-adj (available-component) "
-                     "values — AJ's null is 0 by construction (plan §3.5), so no separate baseline "
-                     "subtraction is needed. Not yet the pre-registered primary test; reported for "
-                     "comparison pending the Phase B validation gate.")
+        lines.append("The PRIMARY pre-registered test (Decision D1): one-sided sign-flip permutation applied "
+                     "directly to per-instance ECS-adj (available-component) values — AJ's null is 0 by "
+                     "construction (plan §3.5), so no separate baseline subtraction is needed. "
+                     "Holm-corrected across this run's cells; `—` = cell below the configured minimum N.")
         lines.append("")
         lines.append("| Model | Dataset | N (ECS-adj) | Mean ECS-adj | p (raw) | p (Holm) |")
         lines.append("|-------|---------|-------------|--------------|---------|----------|")

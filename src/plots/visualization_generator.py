@@ -71,10 +71,10 @@ class VisualizationGenerator:
         ax.legend()
         self._save(fig, "flip_rate_comparison")
 
-    def plot_robustness_analysis(self, data: pd.DataFrame):
+    def plot_robustness_analysis(self, data: pd.DataFrame, value_col: str = "ECS"):
         fig, ax = plt.subplots(figsize=(8, 5))
         if not data.empty:
-            sns.boxplot(data=data, x="Variation", y="ECS", ax=ax)
-            sns.stripplot(data=data, x="Variation", y="ECS", color="black", alpha=0.3, size=3, ax=ax)
+            sns.boxplot(data=data, x="Variation", y=value_col, ax=ax)
+            sns.stripplot(data=data, x="Variation", y=value_col, color="black", alpha=0.3, size=3, ax=ax)
         ax.set_title("Robustness Analysis")
         self._save(fig, "robustness_analysis")

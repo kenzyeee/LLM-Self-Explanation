@@ -1,8 +1,8 @@
 The text was classified as: {predicted_label}
 
-Modify the text below to change its classification. Change as few words as possible.
+Rewrite the text below so that a classifier would assign it a different category from these: {label_set}. Change as few words as possible.
 
-Original Text: "{input_text}"
+Text: "{input_text}"
 
 Return only valid JSON:
-{{"counterfactual_text":"<modified text>","new_prediction":"<flipped label>"}}
+{{"rewritten": "<edited text>", "new_prediction": "<the new category, one of: {label_set}>"}}

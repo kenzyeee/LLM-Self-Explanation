@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 import sys
 from pathlib import Path
 from typing import Dict, List, Any, Tuple, Set, Optional
@@ -85,7 +86,11 @@ def parse_raw_tokens(strategy_id: str, raw: str, text: str,
         if strategy_id == "H":
             return parser.parse_highlighting(raw, text, normalizer, skip_validation=True)
         elif strategy_id == "R":
-            _, evidence = parser.parse_rationale(raw, text, normalizer, skip_validation=True)
+            # skip_validation=False so the rationale's content-word evidence is actually
+            # extracted and anchored (P0.2): with skip_validation=True parse_rationale
+            # returns an EMPTY evidence list, so R never entered the ablation ECS and
+            # every R-alt delta was structurally 0.
+            _, evidence = parser.parse_rationale(raw, text, normalizer, skip_validation=False)
             return evidence
         elif strategy_id == "CF":
             cf_text, _pred, _from = parser.parse_counterfactual(raw, text, predicted_label, label_set,
@@ -115,6 +120,16 @@ async def run_classify(engine, class_prompt, parser, label_set):
     result = await engine.classify(class_prompt)
     predicted_label = parser.parse_classification(result.raw_response, label_set)
     return predicted_label, result.raw_response
+
+
+def strategy_max_tokens(strategy_id: str, input_text: str, base: int = 512) -> int:
+    """Per-strategy output budget mirroring the live run (P0.2): H scores EVERY word,
+    so on long inputs a flat budget truncates its salience list. Give H a
+    length-proportional budget; other strategies keep the flat base."""
+    if strategy_id == "H":
+        n_words = len(input_text.split())
+        return max(base * 2, 12 * n_words + 200)
+    return base
 
 
 async def run_explain(engine, class_prompt, class_raw, explain_prompt, max_tokens=512) -> str:
@@ -147,17 +162,31 @@ async def run_ablations(config, args):
     all_plot_data = []
 
     for dataset_config in config.datasets:
-        dataset = loader.load_dataset(dataset_config.huggingface_id, dataset_config.split)
-        instances = loader.sample_balanced(
-            dataset=dataset,
-            n_samples=min(dataset_config.sample_size, config.ablations.subset_size),
-            label_field=getattr(dataset_config, "label_field", "label"),
-            text_field=getattr(dataset_config, "text_field", "text"),
-            secondary_text_field=getattr(dataset_config, "secondary_text_field", None),
-            dataset_name=dataset_config.name,
-            split=dataset_config.split,
-        )
-        logger.info(f"Loaded {len(instances)} instances for {dataset_config.name} ablation")
+        subset_n = min(dataset_config.sample_size, config.ablations.subset_size)
+        # Prefer the frozen curated set, sliced with the SAME seeded shuffle as the main
+        # run (P0.2), so the ablation runs on a subset of the very instances the study
+        # analyses — not a fresh, incomparable live HuggingFace draw.
+        curated_path = Path("data/processed") / f"{dataset_config.name}_curated.jsonl"
+        if curated_path.exists():
+            instances = loader.load_curated(str(curated_path))
+            rng_slice = random.Random(config.experiment.seed)
+            rng_slice.shuffle(instances)
+            instances = instances[:subset_n]
+            logger.info(f"Loaded {len(instances)} CURATED instances for {dataset_config.name} "
+                        f"ablation from {curated_path}")
+        else:
+            dataset = loader.load_dataset(dataset_config.huggingface_id, dataset_config.split)
+            instances = loader.sample_balanced(
+                dataset=dataset,
+                n_samples=subset_n,
+                label_field=getattr(dataset_config, "label_field", "label"),
+                text_field=getattr(dataset_config, "text_field", "text"),
+                secondary_text_field=getattr(dataset_config, "secondary_text_field", None),
+                dataset_name=dataset_config.name,
+                split=dataset_config.split,
+                label_names=dataset_config.labels if hasattr(dataset_config, "labels") else None,
+            )
+            logger.info(f"Loaded {len(instances)} sampled instances for {dataset_config.name} ablation")
 
         class_prompt_template = load_classification_prompt(config, dataset_config.name)
         strategy_prompts = load_strategy_explain_prompts(config)
@@ -187,7 +216,8 @@ async def run_ablations(config, args):
             for s in STRATEGY_IDS:
                 try:
                     raw_response = await run_explain(engine, class_prompt, class_raw,
-                                                     strategy_prompts[s])
+                                                     strategy_prompts[s],
+                                                     max_tokens=strategy_max_tokens(s, text))
                     raw_tokens[s] = parse_raw_tokens(s, raw_response, text, predicted_label,
                                                      label_set, parser, normalizer)
                 except (APIError, ParsingError, json.JSONDecodeError) as e:
@@ -224,7 +254,8 @@ async def run_ablations(config, args):
 
                     try:
                         raw_alt = await run_explain(engine, bd["class_prompt"],
-                                                    bd["class_raw"], alt_prompt)
+                                                    bd["class_raw"], alt_prompt,
+                                                    max_tokens=strategy_max_tokens(s, inst.text))
                         alt_raw_tokens = parse_raw_tokens(
                             s, raw_alt, inst.text, bd["predicted_label"],
                             label_set, parser, Normalizer())
@@ -259,18 +290,20 @@ async def run_ablations(config, args):
                 json.dump(prompt_results, f, indent=2)
             all_results[f"{dataset_config.name}_prompt"] = prompt_results
 
-    # Generate robustness plot
+    # Save combined results BEFORE plotting (P0.2): the plot must never be able to lose
+    # the results JSON if it raises after all the API spend.
+    with open(output_dir / "ablation_results.json", "w") as f:
+        json.dump(all_results, f, indent=2)
+    logger.info(f"Ablation results saved to {output_dir / 'ablation_results.json'}")
+
+    # Generate robustness plot. The plot frame's value column is ECS_delta, not ECS.
     if all_plot_data:
         plot_df = pd.DataFrame(all_plot_data)
         viz = VisualizationGenerator(output_dir, dpi=config.output.figure_dpi)
-        viz.plot_robustness_analysis(plot_df)
+        viz.plot_robustness_analysis(plot_df, value_col="ECS_delta")
         logger.info(f"Robustness analysis plot saved to {output_dir}")
 
-    # Save combined results
-    with open(output_dir / "ablation_results.json", "w") as f:
-        json.dump(all_results, f, indent=2)
-        logger.info(f"Ablation studies complete. Results saved to {output_dir}")
-
+    logger.info(f"Ablation studies complete. Results saved to {output_dir}")
     return all_results
 
 

@@ -361,7 +361,9 @@ class MetricsCalculator:
             "H": lambda r: r.highlighting_tokens if r.highlighting_valid else None,
             "R": lambda r: r.rationale_tokens if r.rationale_valid else None,
             "CF": lambda r: r.counterfactual_tokens if r.counterfactual_valid else None,
-            "RO": lambda r: {t for t, _ in r.rank_ordering_tokens} if r.rank_ordering_valid else None,
+            # Top-k RO evidence set ECS scored (review P1.1), falling back to the full
+            # ranked list for legacy records that predate rank_ordering_set.
+            "RO": lambda r: (getattr(r, "rank_ordering_set", None) or {t for t, _ in r.rank_ordering_tokens}) if r.rank_ordering_valid else None,
         }
 
         per_dataset: Dict[str, Dict] = {}

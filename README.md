@@ -24,7 +24,11 @@ config/ ──► load ──► inference ──► parsing ──► normaliza
 
 ```bash
 pip install -r requirements.txt
+python -m spacy download en_core_web_sm   # required: rationale (R) evidence extraction
 ```
+
+The spaCy English model is a required post-install step — `run_experiment.py` fails fast
+at startup without it (rationale extraction would otherwise silently degrade).
 
 Authenticate to Bedrock with a **Bedrock API key** (bearer token) — create one in the
 Bedrock console, then:
@@ -55,15 +59,14 @@ python scripts/run_experiment.py
 # Run with overrides (--models selects a subset of the configured models by name)
 python scripts/run_experiment.py --models nova-pro deepseek-v3 --sample-size 50 --force-restart
 
-# Ablation studies
-python scripts/run_ablations.py --variants prompt normalization --k-values 2 3
+# Prompt-paraphrase ablation (the one pre-registered robustness ablation)
+python scripts/run_ablations.py
 
-# Validity tests
+# Erasure pass (second consistency axis; run after a completed experiment)
 python scripts/run_validity_tests.py
 
-# Analyze results & generate paper
+# Analyze results
 python scripts/analyze_results.py
-python scripts/generate_paper.py
 ```
 
 See `python scripts/run_experiment.py --help` for all CLI options.
@@ -84,15 +87,14 @@ See `python scripts/run_experiment.py --help` for all CLI options.
 │   ├── metrics/         ECS, Jaccard, Kendall, consensus cores + validity
 │   ├── statistics/      Statistical tests (bootstrap, permutation, t-test)
 │   ├── plots/           Visualization generation
-│   ├── paper/           LaTeX paper generator
 │   └── utils/           Config, logging, checkpointing, exceptions, data models
 ├── scripts/             Entry-point scripts
 │   ├── run_experiment.py      Full pipeline
-│   ├── run_ablations.py       Ablation studies
-│   ├── run_validity_tests.py  Validity testing
+│   ├── run_ablations.py       Prompt-paraphrase ablation
+│   ├── run_validity_tests.py  Erasure pass (second consistency axis)
 │   ├── analyze_results.py     Result analysis
-│   └── generate_paper.py      Paper generation
-├── tests/               415 tests (100% coverage)
+│   └── show_results.py        Quick summary of the latest run
+├── tests/               Automated test suite (see Development)
 ├── outputs/             Experiment outputs & checkpoints
 ├── paper/               Generated LaTeX + figures + tables
 ├── data/                Dataset cache
@@ -124,7 +126,7 @@ python -m pytest --cov=src --cov-report=term
 python -m pytest tests/test_metrics_calculator.py -v
 ```
 
-The test suite covers the collection, metric, statistics, and erasure paths (500+ tests, including a `test_scientific_invariants.py` fixture suite that pins ECS on synthetic all-agree / all-disagree / inflection-equivalent inputs).
+The test suite covers the collection, metric, statistics, and erasure paths (589 tests, including a `test_scientific_invariants.py` fixture suite that pins ECS on synthetic all-agree / all-disagree / inflection-equivalent inputs).
 
 ## Citation
 
