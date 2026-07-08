@@ -1,5 +1,18 @@
 # ECS-adj Pilot Rescore — 2026-07-06
 
+> **ANNOTATION 2026-07-08 (P1.3, corrected-V):** the ECS-adj headline figures in this
+> document (≈0.61–0.63) were computed on the **old N=90 pilot with the pre-P0.1 INFLATED
+> vocabulary** (V counted over raw surface words, ~1.4–1.9× too large). A larger V lowers
+> E[J], which mechanically inflates AJ — so these numbers are systematically **high**. The
+> corrected-V reality, measured on the independently-audited N=225 pilot
+> `20260707_223054_6c9bce68` (V over normalized content lemmas, plus the P1.1 support-closure
+> union), is **complete-case ECS-adj ≈ +0.4413 (pooled) / +0.29–+0.69 per cell** and
+> available-component ≈ +0.47 — exactly the downward direction the V correction predicts.
+> **For the paper, cite the 20260707 pilot (or the frozen 200-run) as the ECS-adj adoption
+> evidence, not the 0.61–0.63 figures below.** This document is retained as the Phase B.3
+> methodology record (estimator-vs-estimator on identical raw sets); its *relative* finding
+> (ECS-adj behaves as designed vs legacy ECS) stands, only its absolute level is stale.
+
 **Status:** Phase B.3 validation evidence (`ECS_ROBUSTNESS_PLAN_2026-07-05.md` §6.3),
 not adoption. **Zero API calls**: every number below is recomputed offline from the
 evidence token sets already persisted in pilot run `20260703_124843_013dd120`

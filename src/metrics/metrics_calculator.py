@@ -319,11 +319,12 @@ class MetricsCalculator:
         return jac_sum / n_sims
 
     @staticmethod
-    def compute_cross_model_agreement(results, n_bootstrap: int = 1000, seed: int = 42) -> Dict[str, Dict]:
+    def compute_cross_model_agreement(results, n_bootstrap: int = 1000, seed: int = 42,
+                                      eps: float = 0.10) -> Dict[str, Dict]:
         """Cross-model SAME-strategy agreement: for each (dataset, instance) present
-        under >=2 models, the pairwise Jaccard between different models' evidence
-        sets for the SAME strategy — plus the within-model cross-strategy ECS of the
-        same instances for direct comparison.
+        under >=2 models, the pairwise agreement between different models' evidence
+        sets for the SAME strategy — plus the within-model cross-strategy consensus
+        of the same instances for direct comparison.
 
         This is the free analysis the multi-model design enables: if within-model
         cross-strategy consensus is systematically higher than cross-model
@@ -334,22 +335,33 @@ class MetricsCalculator:
         sets are already in the shared normalized token space, so the comparison is
         apples-to-apples. Zero extra API calls.
 
-        Also computes a PAIRED per-instance contrast (review P2.4): for each
-        multi-model instance, Δ = (that instance's own cross-model same-strategy
-        mean Jaccard) − (that instance's own within-model mean ECS across its
-        rows). This is a genuine paired estimate (unlike diffing the two dataset
-        means above, which are each averaged over a DIFFERENT set of pairs/rows)
-        with a seeded bootstrap CI, and an explicit stated direction — the report
-        previously cited both the "privileged self-knowledge" and "shared task
-        prior" hypotheses without ever saying which one the run's own data pointed to.
+        Both sides are reported on TWO scales (review P0.2, 2026-07-08):
 
-        Returns {dataset: {"strategies": {S: {mean_jaccard, n_pairs}},
-                           "cross_model_same_strategy_mean": float|None,
-                           "within_model_cross_strategy_mean_ecs": float|None,
-                           "n_instances_multi_model": int,
-                           "paired_contrast": {"mean_delta": float|None, "ci_lower": float,
-                                               "ci_upper": float, "n": int,
-                                               "direction": "cross_model_exceeds"|"within_model_exceeds"|"indeterminate"}}}
+          * ADJUSTED (headline): cross-model side = adjusted_jaccard (AJ, the same
+            chance- AND ceiling-corrected estimator ECS-adj uses) over the instance's
+            vocabulary; within-model side = per-instance mean `ecs_adj`. This is the
+            fair contrast — the raw version below compares same-strategy pairs (similar
+            set sizes, high Jaccard ceiling) against cross-paradigm pairs (dissimilar
+            sizes, structurally capped Jaccard), so part of the raw gap is set-size
+            geometry, not agreement. On the pilot the raw gap roughly halves under AJ
+            and one dataset's paired CI crosses 0 — so the AJ contrast is the honest one.
+          * RAW (descriptive companion): cross-model side = raw Jaccard; within-model
+            side = legacy `ecs`. Retained for comparison with earlier reports; the
+            deprecated raw ECS is the within comparator here, so this is not the
+            headline.
+
+        Also computes a PAIRED per-instance contrast on BOTH scales (review P2.4):
+        for each multi-model instance, Δ = (that instance's own cross-model
+        same-strategy mean) − (that instance's own within-model mean), on the
+        matching scale. This is a genuine paired estimate (unlike diffing the two
+        dataset means, which are each averaged over a DIFFERENT set of pairs/rows)
+        with a seeded bootstrap CI and an explicit stated direction.
+
+        Returns per dataset: raw fields (`strategies`{S:{mean_jaccard,n_pairs}},
+        `cross_model_same_strategy_mean`, `within_model_cross_strategy_mean_ecs`,
+        `paired_contrast`) AND adjusted fields (`strategies_aj`{S:{mean_aj,n_pairs}},
+        `cross_model_same_strategy_mean_aj`, `within_model_cross_strategy_mean_ecs_adj`,
+        `paired_contrast_aj`), plus `n_instances_multi_model`.
         """
         calc = MetricsCalculator()
         from collections import defaultdict
@@ -357,73 +369,93 @@ class MetricsCalculator:
         for r in results:
             by_instance[(r.dataset, r.instance_id)].append(r)
 
+        # Getters return (evidence_set, vocab_size) so the AJ side can size its
+        # hypergeometric urn from the instance's own vocabulary.
         strategy_sets = {
-            "H": lambda r: r.highlighting_tokens if r.highlighting_valid else None,
-            "R": lambda r: r.rationale_tokens if r.rationale_valid else None,
-            "CF": lambda r: r.counterfactual_tokens if r.counterfactual_valid else None,
+            "H": lambda r: (r.highlighting_tokens, getattr(r, "vocab_size", 0)) if r.highlighting_valid else None,
+            "R": lambda r: (r.rationale_tokens, getattr(r, "vocab_size", 0)) if r.rationale_valid else None,
+            "CF": lambda r: (r.counterfactual_tokens, getattr(r, "vocab_size", 0)) if r.counterfactual_valid else None,
             # Top-k RO evidence set ECS scored (review P1.1), falling back to the full
             # ranked list for legacy records that predate rank_ordering_set.
-            "RO": lambda r: (getattr(r, "rank_ordering_set", None) or {t for t, _ in r.rank_ordering_tokens}) if r.rank_ordering_valid else None,
+            "RO": lambda r: ((getattr(r, "rank_ordering_set", None) or {t for t, _ in r.rank_ordering_tokens}),
+                             getattr(r, "vocab_size", 0)) if r.rank_ordering_valid else None,
         }
 
         per_dataset: Dict[str, Dict] = {}
-        agg = defaultdict(lambda: defaultdict(list))   # dataset -> strategy -> [jaccards]
-        within_ecs = defaultdict(list)                 # dataset -> [ecs values]
-        multi_counts = defaultdict(set)                # dataset -> instance ids with >=2 models
-        deltas = defaultdict(list)                      # dataset -> [per-instance paired deltas]
+        agg = defaultdict(lambda: defaultdict(list))       # dataset -> strategy -> [raw jaccards]
+        agg_aj = defaultdict(lambda: defaultdict(list))    # dataset -> strategy -> [adjusted jaccards]
+        within_ecs = defaultdict(list)                     # dataset -> [legacy ecs values]
+        within_ecs_adj = defaultdict(list)                 # dataset -> [ecs_adj values]
+        multi_counts = defaultdict(set)                    # dataset -> instance ids with >=2 models
+        deltas = defaultdict(list)                          # dataset -> [per-instance raw paired deltas]
+        deltas_aj = defaultdict(list)                       # dataset -> [per-instance AJ paired deltas]
 
         for (dataset, iid), rows in by_instance.items():
             if len(rows) < 2:
                 continue
             multi_counts[dataset].add(iid)
             instance_ecs = [r.ecs for r in rows if r.ecs is not None]
+            instance_ecs_adj = [r.ecs_adj for r in rows if getattr(r, "ecs_adj", None) is not None]
             for v in instance_ecs:
                 within_ecs[dataset].append(v)
+            for v in instance_ecs_adj:
+                within_ecs_adj[dataset].append(v)
             instance_jaccards = []
+            instance_ajs = []
             for s, getter in strategy_sets.items():
-                sets = [getter(r) for r in rows]
-                sets = [x for x in sets if x]
-                for i in range(len(sets)):
-                    for j in range(i + 1, len(sets)):
-                        jac = calc.compute_jaccard_similarity(sets[i], sets[j])
+                pairs = [getter(r) for r in rows]
+                pairs = [x for x in pairs if x and x[0]]
+                for i in range(len(pairs)):
+                    for j in range(i + 1, len(pairs)):
+                        (set_i, v_i), (set_j, v_j) = pairs[i], pairs[j]
+                        jac = calc.compute_jaccard_similarity(set_i, set_j)
                         agg[dataset][s].append(jac)
                         instance_jaccards.append(jac)
-            # This instance's OWN paired contrast — both sides averaged over only
+                        # AJ urn = the instance's vocabulary, floored to contain both
+                        # evidence sets (support closure, mirroring P1.1). max over the
+                        # two rows' V handles the post-P1.1 case where the union-closed
+                        # vocab differs slightly across models.
+                        v_pair = max(int(v_i), int(v_j), len(set_i | set_j))
+                        aj, _degen = calc.adjusted_jaccard(set_i, set_j, v_pair, eps)
+                        if aj is not None:
+                            agg_aj[dataset][s].append(aj)
+                            instance_ajs.append(aj)
+            # This instance's OWN paired contrasts — both sides averaged over only
             # THIS instance's rows/pairs, not the dataset's pooled sets.
             if instance_jaccards and instance_ecs:
-                cross_model_this = float(np.mean(instance_jaccards))
-                within_model_this = float(np.mean(instance_ecs))
-                deltas[dataset].append(cross_model_this - within_model_this)
+                deltas[dataset].append(float(np.mean(instance_jaccards)) - float(np.mean(instance_ecs)))
+            if instance_ajs and instance_ecs_adj:
+                deltas_aj[dataset].append(float(np.mean(instance_ajs)) - float(np.mean(instance_ecs_adj)))
+
+        def _paired(d):
+            if not d:
+                return {"mean_delta": None, "ci_lower": 0.0, "ci_upper": 0.0, "n": 0,
+                        "direction": "indeterminate"}
+            rng = np.random.default_rng(seed)
+            n = len(d)
+            boot_means = [float(np.mean(rng.choice(d, size=n, replace=True))) for _ in range(n_bootstrap)]
+            ci_lo, ci_hi = float(np.percentile(boot_means, 2.5)), float(np.percentile(boot_means, 97.5))
+            if ci_lo > 0:
+                direction = "cross_model_exceeds"
+            elif ci_hi < 0:
+                direction = "within_model_exceeds"
+            else:
+                direction = "indeterminate"
+            return {"mean_delta": float(np.mean(d)), "ci_lower": ci_lo, "ci_upper": ci_hi,
+                    "n": n, "direction": direction}
 
         for dataset in sorted(multi_counts.keys()):
             strategies = {}
+            strategies_aj = {}
             all_vals = []
+            all_aj = []
             for s in ["H", "R", "CF", "RO"]:
                 vals = agg[dataset].get(s, [])
-                strategies[s] = {
-                    "mean_jaccard": float(np.mean(vals)) if vals else None,
-                    "n_pairs": len(vals),
-                }
+                strategies[s] = {"mean_jaccard": float(np.mean(vals)) if vals else None, "n_pairs": len(vals)}
                 all_vals.extend(vals)
-
-            d = deltas[dataset]
-            if d:
-                rng = np.random.default_rng(seed)
-                n = len(d)
-                boot_means = [float(np.mean(rng.choice(d, size=n, replace=True))) for _ in range(n_bootstrap)]
-                ci_lo, ci_hi = float(np.percentile(boot_means, 2.5)), float(np.percentile(boot_means, 97.5))
-                mean_delta = float(np.mean(d))
-                if ci_lo > 0:
-                    direction = "cross_model_exceeds"
-                elif ci_hi < 0:
-                    direction = "within_model_exceeds"
-                else:
-                    direction = "indeterminate"
-                paired_contrast = {"mean_delta": mean_delta, "ci_lower": ci_lo, "ci_upper": ci_hi,
-                                   "n": n, "direction": direction}
-            else:
-                paired_contrast = {"mean_delta": None, "ci_lower": 0.0, "ci_upper": 0.0,
-                                   "n": 0, "direction": "indeterminate"}
+                ajs = agg_aj[dataset].get(s, [])
+                strategies_aj[s] = {"mean_aj": float(np.mean(ajs)) if ajs else None, "n_pairs": len(ajs)}
+                all_aj.extend(ajs)
 
             per_dataset[dataset] = {
                 "strategies": strategies,
@@ -431,7 +463,13 @@ class MetricsCalculator:
                 "within_model_cross_strategy_mean_ecs": (
                     float(np.mean(within_ecs[dataset])) if within_ecs[dataset] else None),
                 "n_instances_multi_model": len(multi_counts[dataset]),
-                "paired_contrast": paired_contrast,
+                "paired_contrast": _paired(deltas[dataset]),
+                # Adjusted (AJ) scale — the headline contrast (P0.2).
+                "strategies_aj": strategies_aj,
+                "cross_model_same_strategy_mean_aj": float(np.mean(all_aj)) if all_aj else None,
+                "within_model_cross_strategy_mean_ecs_adj": (
+                    float(np.mean(within_ecs_adj[dataset])) if within_ecs_adj[dataset] else None),
+                "paired_contrast_aj": _paired(deltas_aj[dataset]),
             }
         return per_dataset
 

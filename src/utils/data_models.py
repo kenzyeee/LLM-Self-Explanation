@@ -431,6 +431,14 @@ class AggregateMetrics:
     # Descriptive robustness check only — NOT a primary estimand, NOT NHST-tested.
     mean_ecs_free_cf: float = 0.0
     n_free_cf: int = 0
+    # Free-CF sensitivity on the PRIMARY (ECS-adj) scale (P0.3, 2026-07-08): the
+    # plan §3.4-required AJ-form MNAR robustness check. *_complete is the primary-scale
+    # figure (all 3 paradigm components defined with the free CF substituted); the
+    # available-component figure is the wider-N companion. Descriptive; not NHST-tested.
+    mean_ecs_adj_free_cf_complete: float = 0.0
+    n_ecs_adj_free_cf_complete: int = 0
+    mean_ecs_adj_free_cf: float = 0.0
+    n_ecs_adj_free_cf: int = 0
     # --- ECS-adj (ECS_ROBUSTNESS_PLAN_2026-07-05.md §7): chance- and ceiling-adjusted,
     #     paradigm-balanced ECS. mean_ecs_adj_complete/n_ecs_adj_complete are the
     #     PRIMARY estimand (mean over rows with ecs_adj_complete==True only — mirrors
@@ -446,8 +454,33 @@ class AggregateMetrics:
     mean_ecs_adj_ep: float = 0.0
     mean_ecs_adj_rp: float = 0.0
     n_degenerate_pairs_total: int = 0
+    # ECS-adj length/vocab strata (P1.2, 2026-07-08): the same buckets as the legacy
+    # ECS strata but on the PRIMARY scale. The point of showing them is that the
+    # brevity/short-vocab confounds visible in raw ECS (which the chance+ceiling
+    # adjustment is designed to remove) do NOT reproduce under ECS-adj — so the old
+    # "ECS may reflect brevity" / "short-vocab inflates ECS" caveats describe the
+    # deprecated metric and are evidence FOR the adjustment, not against the result.
+    mean_ecs_adj_short: float = 0.0
+    n_ecs_adj_short: int = 0
+    mean_ecs_adj_medium: float = 0.0
+    n_ecs_adj_medium: int = 0
+    mean_ecs_adj_long: float = 0.0
+    n_ecs_adj_long: int = 0
+    mean_ecs_adj_normal_vocab: float = 0.0
+    n_ecs_adj_normal_vocab: int = 0
+    mean_ecs_adj_short_vocab: float = 0.0
+    n_ecs_adj_short_vocab: int = 0
+    # Available-component ECS-adj test — family (a2, SENSITIVITY) after the P0.1
+    # amendment (2026-07-08): larger N, but for >half its rows it is a statement about
+    # a single paradigm pair (E-R only). Kept as the wider-N robustness companion.
     ecs_adj_p_value: Optional[float] = None
     ecs_adj_p_holm: Optional[float] = None
+    # Complete-case ECS-adj test — family (a, PRIMARY) after the P0.1 amendment: the
+    # sign-flip test is run on the SAME population as the primary estimand (all three
+    # paradigm components defined), closing the estimand/test mismatch that a reviewer
+    # would otherwise exploit ("your significance test is not on your estimand").
+    ecs_adj_complete_p_value: Optional[float] = None
+    ecs_adj_complete_p_holm: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -822,13 +855,25 @@ def generate_md_report(
             lines.append(f"**Note:** No long inputs (>50 words) were sampled. Instances with a defined "
                          f"ECS (N={_len_total} of {overall.n_instances} sampled) are short (≤20 words, "
                          f"N={overall.n_short}) or medium-length (21–50 words, N={overall.n_medium}). "
-                         "ECS may partly reflect brevity.")
+                         "Legacy (raw) ECS may partly reflect brevity; the primary ECS-adj strata below "
+                         "test whether that confound survives the chance+ceiling adjustment (P1.2).")
         else:
             lines.append(f"**Note:** Instances with a defined ECS (N={_len_total} of {overall.n_instances} "
                          f"sampled), by length: short (≤20 words) N={overall.n_short}; medium (21–50) "
-                         f"N={overall.n_medium}; long (>50) N={overall.n_long}. ECS may partly reflect brevity.")
+                         f"N={overall.n_medium}; long (>50) N={overall.n_long}. Legacy (raw) ECS may partly "
+                         "reflect brevity; the primary ECS-adj strata below test whether that confound "
+                         "survives the chance+ceiling adjustment (P1.2).")
         lines.append("")
-        lines.append(f"**Short-vocab filter:** Instances with ≤20 unique normalized tokens are flagged `short_vocab` (N={overall.n_short_vocab}). These degenerate inputs yield inflated/trivial ECS via near-identical evidence across strategies. Compare filtered results below.")
+        lines.append(f"**Short-vocab flag (provenance, not a filter — P1.2):** {overall.n_short_vocab} "
+                     "instances have ≤20 unique normalized tokens (`short_vocab`). In raw ECS these "
+                     "degenerate inputs yield inflated/trivial agreement via near-identical evidence "
+                     "across strategies — a confound the ECS-adj chance+ceiling adjustment is designed to "
+                     "remove. The flag is retained for provenance/auditing, but it is NOT a "
+                     "\"conservative-estimate\" filter: post-P0.1 the normalized-vocab threshold of 20 "
+                     "flags the majority of SST-2 and MNLI instances (median normalized vocab there is "
+                     "~9–11), so filtering on it would be an AG-News-only estimate wearing a robustness "
+                     "costume. The vocab strata below are reported on the primary (ECS-adj) scale, and "
+                     "the continuous vocab↔ECS-adj relationship is the honest presentation.")
 
         lines.append("")
         lines.append("## Overview — Two Analysis Regimes")
@@ -848,6 +893,16 @@ def generate_md_report(
                      "edit is to find), which is precisely why this sensitivity analysis exists: it shows "
                      "whether the ECS-level conclusions survive when the perturbation paradigm isn't gated "
                      "by the minimal-edit constraint.")
+        lines.append("")
+        lines.append(f"**Sensitivity analysis — free-CF ECS-adj (PRIMARY scale, P0.3):** complete-case "
+                     f"{overall.mean_ecs_adj_free_cf_complete:+.4f} (N={overall.n_ecs_adj_free_cf_complete}); "
+                     f"available-component {overall.mean_ecs_adj_free_cf:+.4f} (N={overall.n_ecs_adj_free_cf}). "
+                     "Because ECS-adj is now the primary estimand (Decision D1), the plan §3.4 MNAR "
+                     "robustness check must also exist on the chance- AND ceiling-corrected scale, not "
+                     "only on the deprecated flat ECS above. Same substitution (free CF rewrite for the "
+                     "minimal-CF evidence), scored with the AJ estimator. Zero additional API cost; "
+                     "descriptive robustness check, not NHST-tested. A positive complete-case value here "
+                     "means the primary conclusion survives removing the minimal-edit gate.")
         lines.append("")
         lines.append("### Analysis B: Coverage")
         lines.append("")
@@ -918,13 +973,41 @@ def generate_md_report(
         lines.append(f"| Mean ECS-adj E-R (extraction-rationalization) | {overall.mean_ecs_adj_er:.4f} |")
         lines.append(f"| Mean ECS-adj E-P (extraction-perturbation) | {overall.mean_ecs_adj_ep:.4f} |")
         lines.append(f"| Mean ECS-adj R-P (rationalization-perturbation) | {overall.mean_ecs_adj_rp:.4f} |")
+        _n_ecs_legacy = sum(1 for r in all_results if r.ecs is not None)
+        lines.append("")
+        lines.append(f"> **Non-nested Ns (P2):** legacy ECS is defined for N={_n_ecs_legacy} rows (≥3 valid "
+                     f"strategies) and available-component ECS-adj for N={overall.n_ecs_adj} rows — these "
+                     "populations OVERLAP but are NOT nested. ECS-adj degrades gracefully per component, "
+                     "so it can be defined below the ≥3-valid gate; conversely an all-degenerate instance "
+                     "loses ECS-adj while keeping legacy ECS. The two counts are therefore not expected to "
+                     "reconcile.")
+        lines.append("")
+        lines.append("> **Component-subset caveat (P2):** the available-component E-R / E-P / R-P means "
+                     "above are each computed over a DIFFERENT subset of instances (E-P and R-P exist only "
+                     "where a valid CF was elicited — a heavily selected minority; E-R exists far more "
+                     "often). Do not compare the E-R vs E-P *available* means directly as if within-instance. "
+                     "The complete-case ECS-adj table is the clean within-instance comparison across all "
+                     "three paradigm pairs.")
         lines.append(f"| Degenerate pairs (J_max - E[J] < eps) | {overall.n_degenerate_pairs_total} |")
         lines.append("")
-        lines.append("> **Significance testing: pre-registered tests only.** Exactly two test families "
-                     "run: (a) sign-flip permutation on per-instance ECS-adj > 0 (null=0 by construction, "
-                     "plan §3.5) per model×dataset cell, Holm-corrected across cells — the PRIMARY test "
-                     "(Decision D1), results in the ECS-adj table below; (b) CC-erasure vs random control "
-                     "in the separate erasure pass. Every other number in this report — strata, splits, "
+        lines.append("> **AJ floor & test conservativeness (P1.4).** AJ is NOT bounded below by −1: the "
+                     "floor is −E[J]/(J_max−E[J]), asymmetric by design (pilot minimum pair value ≈ −1.5). "
+                     "So the AJ null distribution is left-skewed — bounded above at +1 with a long "
+                     "negative tail — which makes the one-sided sign-flip test for `mean > 0` "
+                     "**conservative** (a documented property of the estimator, not a discovered one). "
+                     "Consequently a **negative cell mean** (which can occur in tiny-N cells) must never "
+                     "be read as a \"below-chance magnitude\": the floor asymmetry means negative values "
+                     "are not on the same scale as positive ones. Report negative cell means as "
+                     "\"not above chance at this N\", never as a signed effect size.")
+        lines.append("")
+        lines.append("> **Significance testing: pre-registered tests only.** The pre-registered families: "
+                     "(a) PRIMARY — sign-flip permutation on per-instance ECS-adj > 0 (null=0 by "
+                     "construction, plan §3.5) on the **complete-case** population per model×dataset cell, "
+                     "Holm-corrected across cells (Decision D1; the estimand/test population was aligned "
+                     "in the 2026-07-08 P0.1 amendment); (a2) SENSITIVITY — the same test on the "
+                     "available-component pool (wider N, but >half its rows are a single-paradigm-pair "
+                     "statement); (b) CC-erasure vs random control in the separate erasure pass. Both (a) "
+                     "and (a2) tables are below. Every other number in this report — strata, splits, "
                      "contrasts — is descriptive, and cells below the configured minimum N report "
                      "estimates without a test. The legacy sign-flip test on mean ECS-lift > 0 is "
                      "**deprecated**, retained below for comparison with earlier reports only.")
@@ -977,15 +1060,49 @@ def generate_md_report(
             lines.append(f"| {model_label} | {ds} | {md.n_lift} | {md.mean_ecs_lift:+.4f} | {p_raw} | {p_holm} |")
 
         lines.append("")
-        lines.append("### Pre-registered test (a): mean ECS-adj > 0, per model×dataset cell (PRIMARY)")
+        lines.append("### Pre-registered test (a): mean ECS-adj > 0 on COMPLETE CASES, per cell (PRIMARY)")
         lines.append("")
-        lines.append("The PRIMARY pre-registered test (Decision D1): one-sided sign-flip permutation applied "
-                     "directly to per-instance ECS-adj (available-component) values — AJ's null is 0 by "
-                     "construction (plan §3.5), so no separate baseline subtraction is needed. "
-                     "Holm-corrected across this run's cells; `—` = cell below the configured minimum N.")
+        lines.append("The PRIMARY pre-registered test (Decision D1; estimand/test alignment fixed in the "
+                     "2026-07-08 P0.1 amendment): one-sided sign-flip permutation applied directly to "
+                     "per-instance ECS-adj on the **complete-case** population (all three paradigm "
+                     "components defined) — the same population as the primary estimand. AJ's null is 0 "
+                     "by construction (plan §3.5), so no baseline subtraction is needed. Holm-corrected "
+                     "across this run's cells; `—` = cell below the configured minimum N.")
         lines.append("")
-        lines.append("| Model | Dataset | N (ECS-adj) | Mean ECS-adj | p (raw) | p (Holm) |")
-        lines.append("|-------|---------|-------------|--------------|---------|----------|")
+        lines.append("| Model | Dataset | N (complete) | Mean ECS-adj (complete) | p (raw) | p (Holm) |")
+        lines.append("|-------|---------|--------------|--------------------------|---------|----------|")
+        for md in model_dataset:
+            parts = md.group_name.split("_", 1)
+            ds = parts[1] if len(parts) > 1 else md.group_name
+            model_label = parts[0] if len(parts) > 1 else "—"
+            p_raw = f"{md.ecs_adj_complete_p_value:.4f}" if md.ecs_adj_complete_p_value is not None else "—"
+            p_holm = f"{md.ecs_adj_complete_p_holm:.4f}" if md.ecs_adj_complete_p_holm is not None else "—"
+            lines.append(f"| {model_label} | {ds} | {md.n_ecs_adj_complete} | {md.mean_ecs_adj_complete:+.4f} | {p_raw} | {p_holm} |")
+        # Code-complete means "all 3 paradigm components defined" — it does NOT imply
+        # "no degenerate pairs" (a component can rest on one of its two pairs when the
+        # other is degeneracy-guarded). State the count so the plan §3.4 parenthetical
+        # correction (P0.1) is visible in the artifact, not just the doc.
+        _n_complete_with_degen = sum(1 for r in all_results if r.ecs_adj_complete and r.n_degenerate_pairs >= 1)
+        _n_complete_total = sum(1 for r in all_results if r.ecs_adj_complete)
+        lines.append("")
+        lines.append(f"*Complete-case = all 3 paradigm components defined; this does NOT mean degeneracy-free: "
+                     f"{_n_complete_with_degen}/{_n_complete_total} complete-case instances contain ≥1 "
+                     "degeneracy-guarded pair (a component rested on its other pair). This is by design "
+                     "(ECS_ROBUSTNESS_PLAN §3.4, corrected in the 2026-07-08 amendment).*")
+
+        lines.append("")
+        lines.append("### Sensitivity test (a2): mean ECS-adj > 0 on AVAILABLE components, per cell")
+        lines.append("")
+        lines.append("The wider-N robustness companion to (a): the same one-sided sign-flip test on the "
+                     "**available-component** ECS-adj (every row with a defined ECS-adj, regardless of how "
+                     "many components survived). This has larger N but, for more than half its rows, is a "
+                     "statement about above-chance agreement across *whichever* paradigm pairs were "
+                     "elicitable (predominantly extraction↔rationalization) — not the full three-paradigm "
+                     "construct. Reported as sensitivity, never as the headline. Holm-corrected as its own "
+                     "family; `—` = cell below the configured minimum N.")
+        lines.append("")
+        lines.append("| Model | Dataset | N (available) | Mean ECS-adj (available) | p (raw) | p (Holm) |")
+        lines.append("|-------|---------|---------------|---------------------------|---------|----------|")
         for md in model_dataset:
             parts = md.group_name.split("_", 1)
             ds = parts[1] if len(parts) > 1 else md.group_name
@@ -1016,6 +1133,13 @@ def generate_md_report(
         lines.append("Association estimate with a seeded bootstrap CI (pre-registered as an estimate, "
                      "not a hypothesis test). Confidence is the model's verbalized 0–100 probability "
                      "that its classification is correct (Tian et al. 2023; Xiong et al. 2024).")
+        lines.append("")
+        lines.append("**Restricted range / heavy ties (P2):** verbalized confidence is severely "
+                     "range-restricted — a large share of instances answer exactly 0.95 and the observed "
+                     "range is roughly 0.7–1.0. This is an expected-null descriptive association under "
+                     "heavy ties, NOT a calibration finding; τ-b (tie-robust) is reported precisely "
+                     "because ρ is fragile under this concentration. Do not interpret the sign of ρ as "
+                     "evidence that confidence tracks consistency.")
         lines.append("Kendall τ-b is a tie-robust companion to Spearman ρ (review P2.2) — descriptive, "
                      "pre-specified alongside ρ, not a replacement or a separate test. Confidence "
                      "concentrates heavily near {0.9–1.0}, so heavy ties make ρ (and its CI) fragile; "
@@ -1066,18 +1190,117 @@ def generate_md_report(
             lines.append("")
             lines.append("## Cross-Model Agreement (same strategy, different models)")
             lines.append("")
-            lines.append("For every instance run under ≥2 models: the Jaccard between DIFFERENT models' "
+            lines.append("For every instance run under ≥2 models: the agreement between DIFFERENT models' "
                          "evidence sets for the SAME strategy, next to the within-model cross-strategy "
-                         "ECS of the same instances. If within-model consensus systematically exceeds "
+                         "consensus of the same instances. If within-model consensus systematically exceeds "
                          "cross-model same-strategy agreement, stated evidence tracks model-specific "
                          "computation (privileged self-knowledge, arXiv:2602.02639); if not, it is "
                          "closer to a generic task prior shared across models (cf. the cross-model "
                          "explanation lottery, arXiv:2603.15821). Zero extra API calls; descriptive.")
             lines.append("")
-            lines.append("| Dataset | N instances | H | R | CF | RO | Cross-model mean | Within-model mean ECS |")
-            lines.append("|---------|-------------|---|---|----|----|------------------|------------------------|")
+            lines.append("> **Scale (P0.2, 2026-07-08):** the HEADLINE contrast is on the **adjusted "
+                         "(AJ)** scale — the same chance- AND ceiling-corrected estimator ECS-adj uses. "
+                         "The raw-Jaccard table further below is a set-size-confounded **descriptive "
+                         "companion only**: same-strategy pairs have similar set sizes and a high Jaccard "
+                         "ceiling, while the within-model cross-paradigm pairs have dissimilar sizes and a "
+                         "structurally capped ceiling, so part of the raw gap is geometry rather than "
+                         "agreement. Under AJ the pilot gap roughly halves and at least one dataset's "
+                         "paired CI includes 0.")
             _LOW_N_CROSS_MODEL = 5
             _any_low_n = False
+            _direction_labels = {
+                "cross_model_exceeds": "Cross-model exceeds within-model",
+                "within_model_exceeds": "Within-model exceeds cross-model",
+                "indeterminate": "Indeterminate (CI spans 0)",
+            }
+
+            lines.append("")
+            lines.append("### Adjusted (AJ) — headline")
+            lines.append("")
+            lines.append("| Dataset | N instances | H | R | CF | RO | Cross-model mean (AJ) | Within-model mean ECS-adj |")
+            lines.append("|---------|-------------|---|---|----|----|------------------------|----------------------------|")
+
+            def _cell_aj(s):
+                nonlocal _any_low_n
+                v = strat_aj.get(s, {}).get("mean_aj")
+                n = strat_aj.get(s, {}).get("n_pairs", 0)
+                flag = ""
+                if 0 < n < _LOW_N_CROSS_MODEL:
+                    flag = "‡"
+                    _any_low_n = True
+                return f"{v:+.3f} ({n}){flag}" if v is not None else f"— ({n})"
+
+            for ds, entry in sorted(cross_model.items()):
+                strat_aj = entry.get("strategies_aj", {})
+                xm = entry.get("cross_model_same_strategy_mean_aj")
+                wm = entry.get("within_model_cross_strategy_mean_ecs_adj")
+                xm_s = f"{xm:+.3f}" if xm is not None else "—"
+                wm_s = f"{wm:+.3f}" if wm is not None else "—"
+                lines.append(
+                    f"| {ds} | {entry.get('n_instances_multi_model', 0)} | {_cell_aj('H')} | {_cell_aj('R')} | "
+                    f"{_cell_aj('CF')} | {_cell_aj('RO')} | {xm_s} | {wm_s} |")
+
+            # Paired per-instance contrast on the AJ scale (P0.2 + review P2.4): a
+            # genuine per-instance pairing (Δ = this instance's own cross-model mean
+            # AJ − its own within-model mean ECS-adj), not a diff of two
+            # independently-averaged dataset means — bootstrap CI + explicit direction.
+            lines.append("")
+            lines.append("#### Paired Per-Instance Contrast (AJ) — headline")
+            lines.append("")
+            lines.append("Δ = (instance's own cross-model same-strategy mean AJ) − (that same instance's "
+                         "own within-model mean ECS-adj), paired within-instance and bootstrapped. "
+                         "Descriptive pre-specified estimate, not a hypothesis test.")
+            lines.append("")
+            lines.append("| Dataset | N | Mean Δ (AJ) | 95% CI | Direction |")
+            lines.append("|---------|---|-------------|--------|-----------|")
+            for ds, entry in sorted(cross_model.items()):
+                pc = entry.get("paired_contrast_aj", {})
+                if pc.get("mean_delta") is None:
+                    lines.append(f"| {ds} | {pc.get('n', 0)} | — | — | — |")
+                    continue
+                lines.append(f"| {ds} | {pc['n']} | {pc['mean_delta']:+.4f} | "
+                             f"[{pc['ci_lower']:+.4f}, {pc['ci_upper']:+.4f}] | "
+                             f"{_direction_labels.get(pc['direction'], pc['direction'])} |")
+            lines.append("")
+            _aj_directions = [entry.get("paired_contrast_aj", {}).get("direction")
+                              for entry in cross_model.values()
+                              if entry.get("paired_contrast_aj", {}).get("mean_delta") is not None]
+            if _aj_directions and all(d == "cross_model_exceeds" for d in _aj_directions):
+                lines.append("**Observed direction (AJ):** on the adjusted scale, cross-model "
+                             "same-strategy agreement exceeds within-model cross-strategy ECS-adj in every "
+                             "dataset (Δ CI entirely above 0) — evidence for a generic task prior shared "
+                             "across models over privileged self-knowledge (cf. the cross-model "
+                             "explanation lottery, arXiv:2603.15821). The raw-Jaccard companion below "
+                             "overstates this gap (~2×); read the adjusted numbers as the effect.")
+            elif _aj_directions and any(d == "cross_model_exceeds" for d in _aj_directions):
+                _n_cross = sum(1 for d in _aj_directions if d == "cross_model_exceeds")
+                lines.append(f"**Observed direction (AJ):** on the adjusted scale, cross-model "
+                             f"same-strategy agreement exceeds within-model cross-strategy ECS-adj in "
+                             f"{_n_cross}/{len(_aj_directions)} dataset(s); the rest have a paired CI that "
+                             "includes 0. The direction is consistent with a shared task prior but is NOT "
+                             "uniformly separated from 0 on the fair scale — the raw-Jaccard companion "
+                             "below overstates it (the raw gap roughly halves under AJ and at least one "
+                             "dataset crosses 0). Read the adjusted numbers as the effect; expect the CIs "
+                             "to tighten at N=200.")
+            elif _aj_directions and all(d == "within_model_exceeds" for d in _aj_directions):
+                lines.append("**Observed direction (AJ):** within-model cross-strategy ECS-adj exceeds "
+                             "cross-model same-strategy agreement in every dataset (Δ CI entirely below 0) "
+                             "— evidence for privileged self-knowledge over a shared task prior "
+                             "(arXiv:2602.02639).")
+            elif _aj_directions:
+                lines.append("**Observed direction (AJ):** no dataset separates from 0 on the adjusted "
+                             "scale — the paired CIs all include 0. The raw-Jaccard companion below is "
+                             "set-size-confounded and should not be read as evidence of a direction.")
+
+            lines.append("")
+            lines.append("### Raw Jaccard — descriptive companion (set-size confounded; DEPRECATED comparator)")
+            lines.append("")
+            lines.append("Raw Jaccard for the cross-model side against the **deprecated** legacy ECS for "
+                         "the within side. Retained for comparison with earlier reports; the AJ table "
+                         "above is the honest contrast. Do not cite these numbers as the effect size.")
+            lines.append("")
+            lines.append("| Dataset | N instances | H | R | CF | RO | Cross-model mean | Within-model mean ECS |")
+            lines.append("|---------|-------------|---|---|----|----|------------------|------------------------|")
 
             def _cell(s):
                 nonlocal _any_low_n
@@ -1098,32 +1321,9 @@ def generate_md_report(
                 lines.append(
                     f"| {ds} | {entry.get('n_instances_multi_model', 0)} | {_cell('H')} | {_cell('R')} | "
                     f"{_cell('CF')} | {_cell('RO')} | {xm_s} | {wm_s} |")
-            if _any_low_n:
-                lines.append("")
-                lines.append(f"*‡ fewer than {_LOW_N_CROSS_MODEL} pairs behind this cell — an unstable "
-                             "estimate, not a reliable rate; do not compare it directly to cells with "
-                             "N in the tens.*")
-
-            # Paired per-instance contrast (review P2.4): a genuine per-instance
-            # pairing (Δ = this instance's own cross-model mean − its own
-            # within-model mean ECS), not a diff of two independently-averaged
-            # dataset means — with a bootstrap CI and the observed direction
-            # stated explicitly, since the framing above cites both competing
-            # hypotheses without ever saying which one this run's data supports.
             lines.append("")
-            lines.append("### Cross-Model vs Within-Model: Paired Per-Instance Contrast")
-            lines.append("")
-            lines.append("Δ = (instance's own cross-model same-strategy mean Jaccard) − (that same "
-                         "instance's own within-model cross-strategy ECS), paired within-instance and "
-                         "bootstrapped. Descriptive pre-specified estimate, not a hypothesis test.")
-            lines.append("")
-            lines.append("| Dataset | N | Mean Δ | 95% CI | Direction |")
-            lines.append("|---------|---|--------|--------|-----------|")
-            _direction_labels = {
-                "cross_model_exceeds": "Cross-model exceeds within-model",
-                "within_model_exceeds": "Within-model exceeds cross-model",
-                "indeterminate": "Indeterminate (CI spans 0)",
-            }
+            lines.append("| Dataset | N | Mean Δ (raw) | 95% CI | Direction |")
+            lines.append("|---------|---|-------------|--------|-----------|")
             for ds, entry in sorted(cross_model.items()):
                 pc = entry.get("paired_contrast", {})
                 if pc.get("mean_delta") is None:
@@ -1132,23 +1332,11 @@ def generate_md_report(
                 lines.append(f"| {ds} | {pc['n']} | {pc['mean_delta']:+.4f} | "
                              f"[{pc['ci_lower']:+.4f}, {pc['ci_upper']:+.4f}] | "
                              f"{_direction_labels.get(pc['direction'], pc['direction'])} |")
-            lines.append("")
-            _defined_directions = [entry.get("paired_contrast", {}).get("direction")
-                                   for entry in cross_model.values()
-                                   if entry.get("paired_contrast", {}).get("mean_delta") is not None]
-            if _defined_directions and all(d == "cross_model_exceeds" for d in _defined_directions):
-                lines.append("**Observed direction:** cross-model same-strategy agreement exceeds "
-                             "within-model cross-strategy ECS in every dataset (Δ CI entirely above 0) — "
-                             "evidence for a generic task prior shared across models over privileged "
-                             "self-knowledge (cf. the cross-model explanation lottery, arXiv:2603.15821).")
-            elif _defined_directions and all(d == "within_model_exceeds" for d in _defined_directions):
-                lines.append("**Observed direction:** within-model cross-strategy ECS exceeds cross-model "
-                             "same-strategy agreement in every dataset (Δ CI entirely below 0) — evidence "
-                             "for privileged self-knowledge over a shared task prior "
-                             "(arXiv:2602.02639).")
-            elif _defined_directions:
-                lines.append("**Observed direction:** mixed across datasets — see the per-dataset "
-                             "direction column above; no single direction holds in every dataset.")
+            if _any_low_n:
+                lines.append("")
+                lines.append(f"*‡ fewer than {_LOW_N_CROSS_MODEL} pairs behind this cell — an unstable "
+                             "estimate, not a reliable rate; do not compare it directly to cells with "
+                             "N in the tens.*")
 
         lines.append("")
         lines.append("### Validation Rates (strict)")
@@ -1182,11 +1370,17 @@ def generate_md_report(
         lines.append("")
         lines.append("### ECS by Input Length")
         lines.append("")
-        lines.append("| Length | N | Mean ECS |")
-        lines.append("|--------|---|----------|")
-        lines.append(f"| Short (≤20 words) | {overall.n_short} | {overall.mean_ecs_short:.4f} |")
-        lines.append(f"| Medium (21–50) | {overall.n_medium} | {overall.mean_ecs_medium:.4f} |")
-        lines.append(f"| Long (>50 words) | {overall.n_long} | {overall.mean_ecs_long:.4f} |")
+        lines.append("Primary (ECS-adj) alongside legacy (raw ECS). The **legacy** column is where the "
+                     "brevity confound lives (short inputs score high on raw agreement); the **ECS-adj** "
+                     "column is the primary scale, where the chance+ceiling adjustment removes that "
+                     "confound. If the raw gradient (short highest) does not reproduce under ECS-adj, the "
+                     "old \"ECS may reflect brevity\" caveat describes the deprecated metric only (P1.2).")
+        lines.append("")
+        lines.append("| Length | N (ECS-adj) | Mean ECS-adj | N (legacy) | Mean ECS (legacy) |")
+        lines.append("|--------|-------------|--------------|------------|-------------------|")
+        lines.append(f"| Short (≤20 words) | {overall.n_ecs_adj_short} | {overall.mean_ecs_adj_short:+.4f} | {overall.n_short} | {overall.mean_ecs_short:.4f} |")
+        lines.append(f"| Medium (21–50) | {overall.n_ecs_adj_medium} | {overall.mean_ecs_adj_medium:+.4f} | {overall.n_medium} | {overall.mean_ecs_medium:.4f} |")
+        lines.append(f"| Long (>50 words) | {overall.n_ecs_adj_long} | {overall.mean_ecs_adj_long:+.4f} | {overall.n_long} | {overall.mean_ecs_long:.4f} |")
 
         # Pre-declared (review P2.6, not post-hoc): SST-2's curation caps max_chars
         # at 400 (config/datasets.yaml), which structurally cannot produce a >50-word
@@ -1204,13 +1398,16 @@ def generate_md_report(
         lines.append("")
         lines.append("### ECS by Vocabulary Size")
         lines.append("")
-        lines.append("| Vocab Bucket | N | Mean ECS |")
-        lines.append("|--------------|---|----------|")
-        lines.append(f"| Normal vocab (>20 unique tokens) | {overall.n_normal_vocab} | {overall.mean_ecs_normal_vocab:.4f} |")
-        lines.append(f"| Short vocab (≤20 unique tokens) | {overall.n_short_vocab} | {overall.mean_ecs_short_vocab:.4f} |")
-        if overall.n_normal_vocab > 0:
-            lines.append("")
-            lines.append("> The normal-vocab column gives a more conservative, reliable ECS estimate by excluding degenerate instances.")
+        lines.append("Primary (ECS-adj) alongside legacy (raw ECS). Raw ECS is inflated for short-vocab "
+                     "instances (chance and ceiling nearly coincide there); ECS-adj corrects exactly that. "
+                     "The short-vocab flag is a provenance marker, not a conservative-estimate filter "
+                     "(see the note above) — do not read the normal-vocab column as \"the conservative "
+                     "estimate\" (P1.2).")
+        lines.append("")
+        lines.append("| Vocab Bucket | N (ECS-adj) | Mean ECS-adj | N (legacy) | Mean ECS (legacy) |")
+        lines.append("|--------------|-------------|--------------|------------|-------------------|")
+        lines.append(f"| Normal vocab (>20 unique tokens) | {overall.n_ecs_adj_normal_vocab} | {overall.mean_ecs_adj_normal_vocab:+.4f} | {overall.n_normal_vocab} | {overall.mean_ecs_normal_vocab:.4f} |")
+        lines.append(f"| Short vocab (≤20 unique tokens) | {overall.n_ecs_adj_short_vocab} | {overall.mean_ecs_adj_short_vocab:+.4f} | {overall.n_short_vocab} | {overall.mean_ecs_short_vocab:.4f} |")
 
         lines.append("")
         lines.append("### Confidence Intervals")

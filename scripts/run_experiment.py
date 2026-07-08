@@ -651,6 +651,28 @@ async def process_instance(
         norm = normalizer.normalize(t)
         if norm:
             vocab_tokens.add(norm)
+    # Support-closure guarantee (review P1.1, 2026-07-08): union in every token any
+    # strategy actually selected, so the hypergeometric null's urn provably contains
+    # the atoms the strategies drew from. Whitespace tokenization with edge-punctuation
+    # stripping keeps a few evidence atoms out of the input-derived vocab (AG News'
+    # glued ellipses "senate...supercomputer" -> one vocab token but "senate" and
+    # "supercomputer" as separate evidence; possessives "turkey's" vs "turkey"), which
+    # both under-counts V and, worse, leaves the null modelling draws from an urn that
+    # cannot contain the selected token — a reviewer attack on the chance correction.
+    # Measured pilot impact (recomputed from raw, 2026-07-08): 64 evidence tokens across
+    # 42 instance-strategy combos were outside the urn. Unioning them in moves the
+    # POOLED estimand negligibly (complete-case +0.4413 -> +0.4392; available
+    # +0.4742 -> +0.4823, both <0.01) and each population gains exactly one instance as
+    # a larger V resolves a borderline degenerate pair. Per-CELL movement is larger than
+    # the plan's original "<=0.001" estimate implied — 6/9 complete-case cell means move
+    # by >0.001 (worst ~-0.055 at N=17 and +0.062 at N=2), and the largest single
+    # instance swings ~0.87 (a small-V instance whose pair crosses the degeneracy guard).
+    # No cell changes sign and no tested cell changes significance, so conclusions are
+    # invariant — but this is a real support-closure change on small-V instances, not a
+    # cosmetic <=0.001 nudge. The evidence sets are already in the same normalized lemma
+    # space as vocab_tokens, so this is a pure set union.
+    for _ev in explanations.values():
+        vocab_tokens |= _ev
     vocab_size = len(vocab_tokens)
     SHORT_VOCAB_THRESHOLD = 20
     short_vocab = vocab_size <= SHORT_VOCAB_THRESHOLD
@@ -949,6 +971,56 @@ def compute_free_cf_sensitivity_ecs(results: List[InstanceResult], calc: Metrics
     return (float(np.mean(values)) if values else 0.0), len(values)
 
 
+def compute_free_cf_sensitivity_ecs_adj(results: List[InstanceResult], calc: MetricsCalculator,
+                                        normalizer: Optional[Normalizer] = None,
+                                        eps: float = 0.10) -> Tuple[float, int, float, int]:
+    """Free-CF sensitivity on the PRIMARY (ECS-adj) scale — the pre-registered analysis
+    the plan §3.4 requires ("the free-CF sensitivity ... should also be computed in AJ
+    form"), now that ECS-adj is primary (P0.3, 2026-07-08). Same substitution as
+    compute_free_cf_sensitivity_ecs (the unconstrained/free CF rewrite replaces the
+    minimal-CF evidence in the perturbation pairs), but scored with compute_ecs_adjusted
+    instead of the legacy flat ECS, so the MNAR robustness check lives on the same
+    chance- AND ceiling-corrected scale as the headline estimand.
+
+    Returns (mean_complete, n_complete, mean_available, n_available):
+      * complete = ecs_adj over rows where all three paradigm components are defined
+        with the free CF substituted (mirrors the primary complete-case estimand);
+      * available = ecs_adj over every row with a defined free-CF ecs_adj.
+    Pure post-processing over already-stored fields — zero additional API calls.
+    Descriptive robustness check only: NOT a primary estimand, NOT NHST-tested (see
+    compute_free_cf_sensitivity_ecs's docstring for why minimal-CF stays primary).
+
+    cf_contrast_tokens are stored as RAW edited surface words, so they are projected
+    into the shared normalized token space before scoring (same reason as the legacy
+    version — comparing raw surface tokens against normalized sets structurally
+    deflates every free-CF pair).
+    """
+    if normalizer is None:
+        normalizer = Normalizer()
+    complete_vals = []
+    avail_vals = []
+    for r in results:
+        if not (r.highlighting_valid and r.rationale_valid and r.rank_ordering_valid
+                and r.cf_contrast_valid and r.cf_contrast_tokens):
+            continue
+        cf_set = normalizer.normalize_tokens(list(r.cf_contrast_tokens))
+        if not cf_set:
+            continue
+        ro_set = r.rank_ordering_set or {t for t, _ in r.rank_ordering_tokens}
+        explanations = {"H": r.highlighting_tokens, "R": r.rationale_tokens,
+                        "CF": cf_set, "RO": ro_set}
+        res = calc.compute_ecs_adjusted(explanations, r.vocab_size, eps=eps)
+        if res["ecs_adj"] is not None:
+            avail_vals.append(res["ecs_adj"])
+            if res["ecs_adj_complete"]:
+                complete_vals.append(res["ecs_adj"])
+    import numpy as np
+    return (
+        float(np.mean(complete_vals)) if complete_vals else 0.0, len(complete_vals),
+        float(np.mean(avail_vals)) if avail_vals else 0.0, len(avail_vals),
+    )
+
+
 def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: str,
                                sampling_log: Optional[SamplingLog] = None,
                                normalizer: Optional[Normalizer] = None) -> AggregateMetrics:
@@ -1016,6 +1088,12 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
     # Free-CF sensitivity analysis (review P1.1): descriptive robustness check, zero
     # extra API cost — see compute_free_cf_sensitivity_ecs's docstring.
     _free_cf_ecs, _n_free_cf = compute_free_cf_sensitivity_ecs(results, MetricsCalculator(), normalizer)
+    # Free-CF sensitivity on the PRIMARY (ECS-adj) scale (P0.3, 2026-07-08): the plan
+    # §3.4-required AJ-form version of the MNAR robustness check. complete = primary
+    # scale; available = wider-N companion. Zero extra API cost.
+    (_free_cf_adj_c, _n_free_cf_adj_c,
+     _free_cf_adj_a, _n_free_cf_adj_a) = compute_free_cf_sensitivity_ecs_adj(
+        results, MetricsCalculator(), normalizer)
 
     # Stratify by length
     length_data = MetricsCalculator.compute_length_stratified_ecs(results)
@@ -1045,6 +1123,19 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
     # available-component secondary over every row with a defined ecs_adj.
     ecs_adj_values = [r.ecs_adj for r in results if r.ecs_adj is not None]
     ecs_adj_complete_values = [r.ecs_adj for r in results if r.ecs_adj_complete and r.ecs_adj is not None]
+    # ECS-adj length/vocab strata (P1.2): same buckets as legacy ECS strata but on the
+    # primary scale — the brevity/short-vocab confounds present in raw ECS should NOT
+    # reproduce here (the adjustment removes exactly those). Computed over rows with a
+    # defined ecs_adj (available-component) so the strata Ns track the primary scale.
+    def _adj_len_bucket(bucket):
+        vals = [r.ecs_adj for r in results if r.ecs_adj is not None
+                and MetricsCalculator.classify_length(r.text) == bucket]
+        return (float(np.mean(vals)) if vals else 0.0), len(vals)
+    adj_short_mean, adj_short_n = _adj_len_bucket("short")
+    adj_medium_mean, adj_medium_n = _adj_len_bucket("medium")
+    adj_long_mean, adj_long_n = _adj_len_bucket("long")
+    adj_normal_vocab = [r.ecs_adj for r in results if r.ecs_adj is not None and not r.short_vocab]
+    adj_short_vocab = [r.ecs_adj for r in results if r.ecs_adj is not None and r.short_vocab]
     ecs_adj_er_values = [r.ecs_adj_er for r in results if r.ecs_adj_er is not None]
     ecs_adj_ep_values = [r.ecs_adj_ep for r in results if r.ecs_adj_ep is not None]
     ecs_adj_rp_values = [r.ecs_adj_rp for r in results if r.ecs_adj_rp is not None]
@@ -1183,6 +1274,10 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
         pair_ns=pair_ns,
         mean_ecs_free_cf=_free_cf_ecs,
         n_free_cf=_n_free_cf,
+        mean_ecs_adj_free_cf_complete=_free_cf_adj_c,
+        n_ecs_adj_free_cf_complete=_n_free_cf_adj_c,
+        mean_ecs_adj_free_cf=_free_cf_adj_a,
+        n_ecs_adj_free_cf=_n_free_cf_adj_a,
         mean_ecs_adj=safe_mean(ecs_adj_values),
         n_ecs_adj=len(ecs_adj_values),
         mean_ecs_adj_complete=safe_mean(ecs_adj_complete_values),
@@ -1191,6 +1286,16 @@ def compute_aggregate_metrics(results: List[InstanceResult], level: str, group: 
         mean_ecs_adj_ep=safe_mean(ecs_adj_ep_values),
         mean_ecs_adj_rp=safe_mean(ecs_adj_rp_values),
         n_degenerate_pairs_total=n_degenerate_pairs_total,
+        mean_ecs_adj_short=adj_short_mean,
+        n_ecs_adj_short=adj_short_n,
+        mean_ecs_adj_medium=adj_medium_mean,
+        n_ecs_adj_medium=adj_medium_n,
+        mean_ecs_adj_long=adj_long_mean,
+        n_ecs_adj_long=adj_long_n,
+        mean_ecs_adj_normal_vocab=safe_mean(adj_normal_vocab),
+        n_ecs_adj_normal_vocab=len(adj_normal_vocab),
+        mean_ecs_adj_short_vocab=safe_mean(adj_short_vocab),
+        n_ecs_adj_short_vocab=len(adj_short_vocab),
     )
 
 
@@ -1572,11 +1677,41 @@ async def run_experiment(config, args):
         a.ecs_lift_p_value = p_raw
         a.ecs_lift_p_holm = p_adj
 
-    # Candidate test: mean ECS-adj > 0, per model×dataset cell (ECS_ROBUSTNESS_
-    # PLAN_2026-07-05.md §3.5). Same sign-flip machinery, but applied DIRECTLY to
-    # ecs_adj (no separate baseline subtraction — AJ's null is 0 by construction).
-    # A separate Holm family from (a) above: descriptive/candidate only until the
-    # Phase B validation gate (plan §6) adopts ECS-adj as the pre-registered primary.
+    # PRIMARY test family (a) — mean ECS-adj > 0 on the COMPLETE-CASE population,
+    # per model×dataset cell (ECS_ROBUSTNESS_PLAN_2026-07-05.md §3.5 + the 2026-07-08
+    # P0.1 amendment). The complete-case ECS-adj (all three paradigm components
+    # defined) IS the primary estimand, so the pre-registered sign-flip test must run
+    # on exactly that population — not on the available-component pool, >half of which
+    # is a single-paradigm-pair statement (E-R only). Same sign-flip machinery applied
+    # DIRECTLY to ecs_adj (AJ's null is 0 by construction — no baseline subtraction).
+    # Holm across this run's cells (its own family).
+    adj_complete_by_group = {
+        a.group_name: [r.ecs_adj for r in all_results
+                       if r.ecs_adj_complete and r.ecs_adj is not None
+                       and f"{next((m.name for m in config.models if m.model_id == r.model), r.model)}_{r.dataset}" == a.group_name]
+        for a in md_aggs
+    }
+    raw_adj_c_ps: List[Optional[float]] = []
+    for a in md_aggs:
+        adj_vals = adj_complete_by_group.get(a.group_name, [])
+        if len(adj_vals) >= min_n:
+            p = sign_flip_permutation_test(adj_vals, n_permutations=n_perms,
+                                           seed=config.experiment.seed, alternative="greater")
+        else:
+            p = None
+        raw_adj_c_ps.append(p)
+    if getattr(config.metrics, "correction", "holm") == "holm":
+        adj_c_ps = holm_correction(raw_adj_c_ps)
+    else:
+        adj_c_ps = list(raw_adj_c_ps)
+    for a, p_raw, p_adj in zip(md_aggs, raw_adj_c_ps, adj_c_ps):
+        a.ecs_adj_complete_p_value = p_raw
+        a.ecs_adj_complete_p_holm = p_adj
+
+    # SENSITIVITY test family (a2) — the same test on the AVAILABLE-COMPONENT ECS-adj
+    # (larger N; framed as "above-chance agreement across whichever paradigm pairs
+    # were elicitable"). Reported as the wider-N robustness companion to (a), never as
+    # the headline. A separate Holm family from (a).
     adj_results_by_group = {
         a.group_name: [r.ecs_adj for r in all_results
                        if r.ecs_adj is not None
