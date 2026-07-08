@@ -1,0 +1,92 @@
+{
+  "ag_news": {
+    "strategies": {
+      "H": {
+        "mean_jaccard": 0.6186719206719207,
+        "n_pairs": 75
+      },
+      "R": {
+        "mean_jaccard": 0.5079303075396825,
+        "n_pairs": 64
+      },
+      "CF": {
+        "mean_jaccard": 0.5,
+        "n_pairs": 2
+      },
+      "RO": {
+        "mean_jaccard": 0.5151693121693122,
+        "n_pairs": 75
+      }
+    },
+    "cross_model_same_strategy_mean": 0.5488223710445932,
+    "within_model_cross_strategy_mean_ecs": 0.32418605204319495,
+    "n_instances_multi_model": 25,
+    "paired_contrast": {
+      "mean_delta": 0.23150472737139402,
+      "ci_lower": 0.17072421154022346,
+      "ci_upper": 0.2985526480045527,
+      "n": 25,
+      "direction": "cross_model_exceeds"
+    }
+  },
+  "mnli": {
+    "strategies": {
+      "H": {
+        "mean_jaccard": 0.7404063402210178,
+        "n_pairs": 71
+      },
+      "R": {
+        "mean_jaccard": 0.650339766778123,
+        "n_pairs": 73
+      },
+      "CF": {
+        "mean_jaccard": 0.6428571428571429,
+        "n_pairs": 21
+      },
+      "RO": {
+        "mean_jaccard": 0.5834713595583161,
+        "n_pairs": 69
+      }
+    },
+    "cross_model_same_strategy_mean": 0.6572785339317053,
+    "within_model_cross_strategy_mean_ecs": 0.41023653551614075,
+    "n_instances_multi_model": 25,
+    "paired_contrast": {
+      "mean_delta": 0.24820096602089084,
+      "ci_lower": 0.19187507188937955,
+      "ci_upper": 0.30662271628179205,
+      "n": 25,
+      "direction": "cross_model_exceeds"
+    }
+  },
+  "sst2": {
+    "strategies": {
+      "H": {
+        "mean_jaccard": 0.6552155606950127,
+        "n_pairs": 73
+      },
+      "R": {
+        "mean_jaccard": 0.6173323092677931,
+        "n_pairs": 62
+      },
+      "CF": {
+        "mean_jaccard": 0.6087719298245614,
+        "n_pairs": 38
+      },
+      "RO": {
+        "mean_jaccard": 0.6532863849765259,
+        "n_pairs": 71
+      }
+    },
+    "cross_model_same_strategy_mean": 0.6377951056229745,
+    "within_model_cross_strategy_mean_ecs": 0.41020748299319726,
+    "n_instances_multi_model": 25,
+    "paired_contrast": {
+      "mean_delta": 0.22970698824984542,
+      "ci_lower": 0.1739604550608122,
+      "ci_upper": 0.2925445543874116,
+      "n": 25,
+      "direction": "cross_model_exceeds"
+    }
+  }
+}

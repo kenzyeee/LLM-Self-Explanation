@@ -1,0 +1,91 @@
+{
+  "table": "datasets",
+  "entries": [
+    {
+      "name": "sst2",
+      "huggingface_id": "stanfordnlp/sst2",
+      "split": "validation",
+      "sample_size": 25,
+      "labels": [
+        "negative",
+        "positive"
+      ],
+      "text_field": "sentence",
+      "secondary_text_field": null,
+      "label_field": "label",
+      "cf_max_edit_ratio": 0.3,
+      "description": "Stanford Sentiment Treebank (binary classification)",
+      "task_type": "sentiment_analysis",
+      "curation": {
+        "target": 200,
+        "min_content_words": 5,
+        "max_chars": 400,
+        "oversample_factor": 1.5,
+        "near_dup_jaccard": 0.9,
+        "stratify_by": [
+          "label",
+          "length"
+        ]
+      }
+    },
+    {
+      "name": "mnli",
+      "huggingface_id": "nyu-mll/multi_nli",
+      "split": "validation_matched",
+      "sample_size": 25,
+      "labels": [
+        "entailment",
+        "neutral",
+        "contradiction"
+      ],
+      "text_field": "premise",
+      "secondary_text_field": "hypothesis",
+      "label_field": "label",
+      "cf_max_edit_ratio": 0.3,
+      "description": "Multi-Genre Natural Language Inference",
+      "task_type": "natural_language_inference",
+      "curation": {
+        "target": 200,
+        "min_content_words": 3,
+        "max_chars": 1500,
+        "oversample_factor": 1.5,
+        "near_dup_jaccard": 0.9,
+        "stratify_by": [
+          "label",
+          "genre",
+          "length"
+        ]
+      }
+    },
+    {
+      "name": "ag_news",
+      "huggingface_id": "fancyzhx/ag_news",
+      "split": "test",
+      "sample_size": 25,
+      "labels": [
+        "World",
+        "Sports",
+        "Business",
+        "Sci/Tech"
+      ],
+      "text_field": "text",
+      "secondary_text_field": null,
+      "label_field": "label",
+      "cf_max_edit_ratio": 0.3,
+      "description": "AG News Topic Classification",
+      "task_type": "topic_classification",
+      "curation": {
+        "target": 200,
+        "min_content_words": 8,
+        "max_chars": 2000,
+        "oversample_factor": 1.5,
+        "near_dup_jaccard": 0.9,
+        "stratify_by": [
+          "label",
+          "length"
+        ]
+      }
+    }
+  ],
+  "timestamp": "2026-07-07T22:57:45.944904"
+}

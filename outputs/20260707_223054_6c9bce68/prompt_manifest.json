@@ -1,0 +1,116 @@
+{
+  "sst2": {
+    "CF_explain": {
+      "file": "prompts/counterfactual_explain.txt",
+      "sha256": "59e9e504619ddf06293bacff7cbde9bc73b845ba943b53986fb40973dbb09c38"
+    },
+    "CF_explain_free": {
+      "file": "prompts/counterfactual_explain_free.txt",
+      "sha256": "54acb2482f04e2fd594f320a64b12bf350056cdda8808807a49a86910e3de034"
+    },
+    "CF_explain_free_multiclass": {
+      "file": "prompts/counterfactual_explain_free_multiclass.txt",
+      "sha256": "d3b368275e460b0f43ac9192a0174d2bb829a2bf2726e25cd857c94a360462eb"
+    },
+    "CF_explain_multiclass": {
+      "file": "prompts/counterfactual_explain_multiclass.txt",
+      "sha256": "014242923bd91043bd6447d65d61e5c736db7b2a21273a7db98efcbdb47114e2"
+    },
+    "H_explain": {
+      "file": "prompts/highlighting_explain.txt",
+      "sha256": "27953023074e67e7719e1cd7a37e3c6fc270dcb9e3dd4f7692d3da6f84255c9e"
+    },
+    "RO_explain": {
+      "file": "prompts/rank_ordering_explain.txt",
+      "sha256": "8a7fed7ce66cec14f3554fc24cb1ee4d4ba83c4b4fd7c4b1027d87f38e2f037a"
+    },
+    "R_explain": {
+      "file": "prompts/rationale_explain.txt",
+      "sha256": "3941e0a091bbeacba275248bbc3d5ebac0a807860e380d39da6f060db2a87546"
+    },
+    "classification": {
+      "file": "prompts/classification_sst2.txt",
+      "sha256": "5ee710d4dfee182d48ab58be87ae65005cdd091ad3c6bf44226858c3d9fb809c"
+    },
+    "confidence": {
+      "file": "prompts/confidence_verbalized.txt",
+      "sha256": "4e8c8c56ae620e530a8e3c3ff8539ef8abf38a38ba7a6dc5b04aa006a46718d3"
+    }
+  },
+  "mnli": {
+    "CF_explain": {
+      "file": "prompts/counterfactual_explain_mnli.txt",
+      "sha256": "4213c6264e4d1d6305773d37ca0d2c819875b68f7051c9b4b0b59abad28aa116"
+    },
+    "CF_explain_free": {
+      "file": "prompts/counterfactual_explain_free.txt",
+      "sha256": "54acb2482f04e2fd594f320a64b12bf350056cdda8808807a49a86910e3de034"
+    },
+    "CF_explain_free_multiclass": {
+      "file": "prompts/counterfactual_explain_free_multiclass_mnli.txt",
+      "sha256": "27afacf5429147f2c93698b0c84a8693a86f3a35a5cd1e86a053fdb8f56fa300"
+    },
+    "CF_explain_multiclass": {
+      "file": "prompts/counterfactual_explain_multiclass_mnli.txt",
+      "sha256": "0ad3563f40190e3817b52312b8251abbf5b76d28c18da69b4600acc31836c7ed"
+    },
+    "H_explain": {
+      "file": "prompts/highlighting_explain.txt",
+      "sha256": "27953023074e67e7719e1cd7a37e3c6fc270dcb9e3dd4f7692d3da6f84255c9e"
+    },
+    "RO_explain": {
+      "file": "prompts/rank_ordering_explain.txt",
+      "sha256": "8a7fed7ce66cec14f3554fc24cb1ee4d4ba83c4b4fd7c4b1027d87f38e2f037a"
+    },
+    "R_explain": {
+      "file": "prompts/rationale_explain.txt",
+      "sha256": "3941e0a091bbeacba275248bbc3d5ebac0a807860e380d39da6f060db2a87546"
+    },
+    "classification": {
+      "file": "prompts/classification_mnli.txt",
+      "sha256": "4a3c19c2e0347cd3a4541ee0eec4520cd4f19d342349c18ec1bc896c9e8d0d26"
+    },
+    "confidence": {
+      "file": "prompts/confidence_verbalized.txt",
+      "sha256": "4e8c8c56ae620e530a8e3c3ff8539ef8abf38a38ba7a6dc5b04aa006a46718d3"
+    }
+  },
+  "ag_news": {
+    "CF_explain": {
+      "file": "prompts/counterfactual_explain_ag_news.txt",
+      "sha256": "da79a52d43cac6e7714ae14c2e217d34aed8afafa61aaa894cf8f618249e1fdf"
+    },
+    "CF_explain_free": {
+      "file": "prompts/counterfactual_explain_free.txt",
+      "sha256": "54acb2482f04e2fd594f320a64b12bf350056cdda8808807a49a86910e3de034"
+    },
+    "CF_explain_free_multiclass": {
+      "file": "prompts/counterfactual_explain_free_multiclass.txt",
+      "sha256": "d3b368275e460b0f43ac9192a0174d2bb829a2bf2726e25cd857c94a360462eb"
+    },
+    "CF_explain_multiclass": {
+      "file": "prompts/counterfactual_explain_multiclass_ag_news.txt",
+      "sha256": "5283fe96533b8e6b2d1edcd04ec1672e928154dd0506a6a29b4f876224ddac61"
+    },
+    "H_explain": {
+      "file": "prompts/highlighting_explain.txt",
+      "sha256": "27953023074e67e7719e1cd7a37e3c6fc270dcb9e3dd4f7692d3da6f84255c9e"
+    },
+    "RO_explain": {
+      "file": "prompts/rank_ordering_explain.txt",
+      "sha256": "8a7fed7ce66cec14f3554fc24cb1ee4d4ba83c4b4fd7c4b1027d87f38e2f037a"
+    },
+    "R_explain": {
+      "file": "prompts/rationale_explain.txt",
+      "sha256": "3941e0a091bbeacba275248bbc3d5ebac0a807860e380d39da6f060db2a87546"
+    },
+    "classification": {
+      "file": "prompts/classification_ag_news.txt",
+      "sha256": "e392a12ec50db10dc8128a5b5a3b303cbccf259265e89c5c8359fd5753ebce77"
+    },
+    "confidence": {
+      "file": "prompts/confidence_verbalized.txt",
+      "sha256": "4e8c8c56ae620e530a8e3c3ff8539ef8abf38a38ba7a6dc5b04aa006a46718d3"
+    }
+  }
+}

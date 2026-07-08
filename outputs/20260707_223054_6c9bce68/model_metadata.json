@@ -1,0 +1,30 @@
+{
+  "table": "models",
+  "entries": [
+    {
+      "name": "nova-pro",
+      "model_id": "eu.amazon.nova-pro-v1:0",
+      "description": "Amazon Nova Pro (via AWS Bedrock, EU inference profile)",
+      "context_window": 300000,
+      "default_temperature": 0,
+      "default_top_p": 1
+    },
+    {
+      "name": "qwen3-235b",
+      "model_id": "qwen.qwen3-235b-a22b-2507-v1:0",
+      "description": "Qwen3 235B A22B Instruct 2507 (via AWS Bedrock, on-demand)",
+      "context_window": 262144,
+      "default_temperature": 0,
+      "default_top_p": 1
+    },
+    {
+      "name": "deepseek-v3",
+      "model_id": "deepseek.v3-v1:0",
+      "description": "DeepSeek V3 (via AWS Bedrock, on-demand)",
+      "context_window": 131072,
+      "default_temperature": 0,
+      "default_top_p": 1
+    }
+  ],
+  "timestamp": "2026-07-07T22:57:45.945495"
+}

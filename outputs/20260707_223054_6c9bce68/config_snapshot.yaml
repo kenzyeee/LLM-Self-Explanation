@@ -1,0 +1,159 @@
+experiment:
+  name: llm-explanation-agreement-study
+  version: '1.0'
+  seed: 42
+datasets:
+- name: sst2
+  huggingface_id: stanfordnlp/sst2
+  split: validation
+  sample_size: 25
+  labels:
+  - negative
+  - positive
+  text_field: sentence
+  secondary_text_field: null
+  label_field: label
+  cf_max_edit_ratio: 0.3
+  description: Stanford Sentiment Treebank (binary classification)
+  task_type: sentiment_analysis
+  curation:
+    target: 200
+    min_content_words: 5
+    max_chars: 400
+    oversample_factor: 1.5
+    near_dup_jaccard: 0.9
+    stratify_by:
+    - label
+    - length
+- name: mnli
+  huggingface_id: nyu-mll/multi_nli
+  split: validation_matched
+  sample_size: 25
+  labels:
+  - entailment
+  - neutral
+  - contradiction
+  text_field: premise
+  secondary_text_field: hypothesis
+  label_field: label
+  cf_max_edit_ratio: 0.3
+  description: Multi-Genre Natural Language Inference
+  task_type: natural_language_inference
+  curation:
+    target: 200
+    min_content_words: 3
+    max_chars: 1500
+    oversample_factor: 1.5
+    near_dup_jaccard: 0.9
+    stratify_by:
+    - label
+    - genre
+    - length
+- name: ag_news
+  huggingface_id: fancyzhx/ag_news
+  split: test
+  sample_size: 25
+  labels:
+  - World
+  - Sports
+  - Business
+  - Sci/Tech
+  text_field: text
+  secondary_text_field: null
+  label_field: label
+  cf_max_edit_ratio: 0.3
+  description: AG News Topic Classification
+  task_type: topic_classification
+  curation:
+    target: 200
+    min_content_words: 8
+    max_chars: 2000
+    oversample_factor: 1.5
+    near_dup_jaccard: 0.9
+    stratify_by:
+    - label
+    - length
+models:
+- name: nova-pro
+  model_id: eu.amazon.nova-pro-v1:0
+  description: Amazon Nova Pro (via AWS Bedrock, EU inference profile)
+  context_window: 300000
+  default_temperature: 0
+  default_top_p: 1
+- name: qwen3-235b
+  model_id: qwen.qwen3-235b-a22b-2507-v1:0
+  description: Qwen3 235B A22B Instruct 2507 (via AWS Bedrock, on-demand)
+  context_window: 262144
+  default_temperature: 0
+  default_top_p: 1
+- name: deepseek-v3
+  model_id: deepseek.v3-v1:0
+  description: DeepSeek V3 (via AWS Bedrock, on-demand)
+  context_window: 131072
+  default_temperature: 0
+  default_top_p: 1
+inference:
+  temperature: 0
+  top_p: 1
+  max_tokens: 1024
+  max_retries: 3
+  retry_delay_base: 2
+  concurrent_requests: 2
+  request_timeout: 30
+explanation_strategies:
+- id: H
+  name: highlighting
+  prompt_file: prompts/highlighting_explain.txt
+  n_tokens: 5
+- id: R
+  name: rationale
+  prompt_file: prompts/rationale_explain.txt
+  n_tokens: null
+- id: CF
+  name: counterfactual
+  prompt_file: prompts/counterfactual_explain.txt
+  n_tokens: null
+- id: RO
+  name: rank_ordering
+  prompt_file: prompts/rank_ordering_explain.txt
+  n_tokens: 5
+confidence:
+  enabled: true
+  prompt_file: prompts/confidence_verbalized.txt
+normalization:
+  version: v3.0
+  lowercase: true
+  remove_punctuation: true
+  remove_stopwords: true
+  use_lemmatization: true
+  stopword_language: english
+  lemmatizer: wordnet
+metrics:
+  bootstrap_iterations: 1000
+  permutation_tests: 10000
+  confidence_level: 0.95
+  correction: holm
+  min_n_for_test: 6
+  ecs_adj_epsilon: 0.1
+validity:
+  masking_token: '[MASK]'
+  n_random_baseline_trials: 5
+  erasure_operators:
+  - mask
+  - delete
+  heldout_cf_verification: true
+ablations:
+  prompt_variants: true
+  subset_size: 50
+output:
+  base_dir: outputs
+  checkpoint_frequency: 20
+  log_level: INFO
+  figure_dpi: 300
+  figure_formats:
+  - pdf
+  - png
+reproducibility:
+  log_git_commit: true
+  log_package_versions: true
+  save_config_with_results: true
