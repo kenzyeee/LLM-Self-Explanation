@@ -419,3 +419,43 @@ class TestFreeCfSensitivityEcs:
         assert n == 2
         # Perfect overlap (i0, ECS=1.0) averaged with zero overlap (i1, ECS=0.0).
         assert mean == pytest.approx(0.5)
+
+
+class TestFreeCfSensitivityEcsAdj:
+    """P0.3 (2026-07-08): the free-CF MNAR robustness check on the PRIMARY (ECS-adj)
+    scale. Returns (mean_complete, n_complete, mean_available, n_available)."""
+
+    def test_empty_results_returns_zeros(self):
+        c, nc, a, na = rx.compute_free_cf_sensitivity_ecs_adj([], MagicMock())
+        assert (c, nc, a, na) == (0.0, 0, 0.0, 0)
+
+    def test_requires_cf_contrast_valid(self):
+        from src.metrics.metrics_calculator import MetricsCalculator
+        r = _free_cf_result("i0", h={"great"}, r={"great"}, cf_free={"great"}, ro=["great"],
+                            cf_free_valid=False)
+        r.vocab_size = 30
+        c, nc, a, na = rx.compute_free_cf_sensitivity_ecs_adj([r], MetricsCalculator())
+        assert nc == 0 and na == 0
+
+    def test_complete_instance_scores_on_aj_scale(self):
+        from src.metrics.metrics_calculator import MetricsCalculator
+        # All four sets overlap on a shared content core over a non-degenerate vocab,
+        # so every paradigm component (E-R, E-P, R-P) is defined -> complete-case, and
+        # positive AJ (agreement well above chance).
+        r = _free_cf_result("i0", h={"great", "movie"}, r={"great", "film"},
+                            cf_free={"great", "terrible"}, ro=["great", "movie"])
+        r.rank_ordering_set = {"great", "movie"}
+        r.vocab_size = 30
+        c, nc, a, na = rx.compute_free_cf_sensitivity_ecs_adj([r], MetricsCalculator())
+        assert nc == 1 and na == 1
+        assert c > 0.0 and a > 0.0
+        assert c == pytest.approx(a)  # single complete instance -> both equal
+
+    def test_zero_vocab_yields_no_defined_scores(self):
+        from src.metrics.metrics_calculator import MetricsCalculator
+        # vocab_size=0 makes every AJ pair degenerate -> ecs_adj undefined -> excluded.
+        r = _free_cf_result("i0", h={"great", "movie"}, r={"great"}, cf_free={"great", "bad"},
+                            ro=["great", "movie"])
+        r.vocab_size = 0
+        c, nc, a, na = rx.compute_free_cf_sensitivity_ecs_adj([r], MetricsCalculator())
+        assert nc == 0 and na == 0

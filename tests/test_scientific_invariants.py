@@ -375,6 +375,69 @@ class TestCrossModelAgreement:
         assert pc["mean_delta"] is None
         assert pc["direction"] == "indeterminate"
 
+    def test_adjusted_scale_fields_present_and_perfect_agreement_is_one(self):
+        """P0.2 (2026-07-08): the headline contrast is on the ADJUSTED (AJ) scale.
+        Identical evidence sets across models over a non-degenerate vocab -> AJ = 1.0
+        (J=1, J_max=1, so (1-E[J])/(1-E[J])=1), and the AJ-scale keys must exist."""
+        from src.utils.data_models import InstanceResult
+        from datetime import datetime
+
+        def make(iid, model, h):
+            r = InstanceResult(
+                instance_id=iid, dataset="sst2", model=model, timestamp=datetime.now(),
+                text="good movie plot acting scene", ground_truth_label="positive",
+                predicted_label="positive", correct=True,
+                highlighting_tokens=set(h), highlighting_valid=True,
+                cc3_tokens=set(), cc4_tokens=set(), cc3_size=0, cc4_size=0,
+                ecs=0.5, ecs_adj=0.30,
+            )
+            r.vocab_size = 25
+            return r
+
+        results = []
+        for i in range(8):
+            iid = f"i{i}"
+            results.append(make(iid, "m1", {"good", "movie"}))
+            results.append(make(iid, "m2", {"good", "movie"}))
+        out = MetricsCalculator.compute_cross_model_agreement(results, n_bootstrap=200)
+        cell = out["sst2"]
+        # AJ-scale keys exist alongside the raw ones.
+        assert "strategies_aj" in cell and "paired_contrast_aj" in cell
+        assert cell["cross_model_same_strategy_mean_aj"] == pytest.approx(1.0, abs=1e-9)
+        assert cell["strategies_aj"]["H"]["mean_aj"] == pytest.approx(1.0, abs=1e-9)
+        assert cell["within_model_cross_strategy_mean_ecs_adj"] == pytest.approx(0.30)
+        pc = cell["paired_contrast_aj"]
+        assert pc["n"] == 8
+        # Δ = 1.0 (AJ) − 0.30 (ecs_adj) = 0.70, CI above 0.
+        assert pc["mean_delta"] == pytest.approx(0.70, abs=0.01)
+        assert pc["ci_lower"] > 0
+        assert pc["direction"] == "cross_model_exceeds"
+
+    def test_adjusted_scale_indeterminate_when_no_ecs_adj(self):
+        """When rows carry no ecs_adj, the AJ paired contrast is empty/indeterminate
+        even though the raw contrast may be defined."""
+        from src.utils.data_models import InstanceResult
+        from datetime import datetime
+
+        def make(iid, model, h):
+            r = InstanceResult(
+                instance_id=iid, dataset="sst2", model=model, timestamp=datetime.now(),
+                text="good movie plot acting", ground_truth_label="positive",
+                predicted_label="positive", correct=True,
+                highlighting_tokens=set(h), highlighting_valid=True,
+                cc3_tokens=set(), cc4_tokens=set(), cc3_size=0, cc4_size=0,
+                ecs=0.5, ecs_adj=None,
+            )
+            r.vocab_size = 20
+            return r
+
+        results = [make("i0", "m1", {"good", "movie"}), make("i0", "m2", {"good", "movie"})]
+        out = MetricsCalculator.compute_cross_model_agreement(results, n_bootstrap=100)
+        pc = out["sst2"]["paired_contrast_aj"]
+        assert pc["n"] == 0
+        assert pc["mean_delta"] is None
+        assert pc["direction"] == "indeterminate"
+
 
 class TestEcsAdjusted:
     """ECS_ROBUSTNESS_PLAN_2026-07-05.md §6 property tests: the exact null must

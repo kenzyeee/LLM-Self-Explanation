@@ -126,7 +126,7 @@ python -m pytest --cov=src --cov-report=term
 python -m pytest tests/test_metrics_calculator.py -v
 ```
 
-The test suite covers the collection, metric, statistics, and erasure paths (589 tests, including a `test_scientific_invariants.py` fixture suite that pins ECS on synthetic all-agree / all-disagree / inflection-equivalent inputs).
+The test suite covers the collection, metric, statistics, and erasure paths (604 tests, including a `test_scientific_invariants.py` fixture suite that pins ECS on synthetic all-agree / all-disagree / inflection-equivalent inputs, plus the ECS-adj complete-case test, AJ cross-model contrast, and free-CF-in-AJ paths added in the 2026-07-08 pre-200-run fixes).
 
 ## Citation
 

@@ -96,9 +96,16 @@ components (R–P is the missing third).
 
 ### 3.4 Explicit missing-data policy (fixes W4)
 
-- **Primary estimand: ECS_adj_complete** — defined only when all 3 components are defined
-  (which requires all 4 strategies valid and no degenerate pairs). This is the current
-  complete-case philosophy, now stated at the component level.
+- **Primary estimand: ECS_adj_complete** — defined only when all 3 components are defined.
+  **[CORRECTED 2026-07-08, see amendment §A below]** The original parenthetical here
+  ("requires all 4 strategies valid and no degenerate pairs") was wrong on both counts:
+  (i) completeness requires R, CF, and at least one of H/RO valid — NOT necessarily all
+  four (E-R and E-P each survive on either of their two extraction partners); (ii)
+  code-complete does NOT imply degeneracy-free — a two-pair component (E-R, E-P) stays
+  defined when one of its pairs is degeneracy-guarded, so a complete-case instance can
+  still contain ≥1 degenerate pair (7/72 in the pilot). Keep the code semantics; this is
+  a text correction. This is the current complete-case philosophy, stated at the
+  component level.
 - **Secondary: available-component ECS_adj** with `n_components` stored — never silently
   renormalized into the headline; reported with its N in its own row.
 - Keep the existing MNAR framing: minimal-CF gating drives missingness; the free-CF
@@ -208,3 +215,85 @@ pre-register this rule to close the forking-paths objection.
 - **Model-based aggregation (mixed-effects over pairs)** — statistically elegant but opaque
   as a headline metric; the cluster-aware bootstrap already handles the pooled-inference
   concern.
+
+---
+
+# Amendment — 2026-07-08 (pre-registration, BEFORE the 200-run launches)
+
+This amendment closes the estimand/test and support-support gaps found by the independent
+pre-200-run audit (`PRE_200RUN_FIX_PLAN_2026-07-08.md`). It is dated and recorded **before**
+the frozen production run launches, so it is a pre-registration amendment, not a
+post-hoc rationalization. Every number below was recomputed from the pilot's raw
+per-instance evidence sets (`outputs/20260707_223054_6c9bce68/instance_results.jsonl`),
+not read from a report.
+
+## §A. Primary estimand ↔ primary test alignment (P0.1)
+
+- **Family (a), PRIMARY:** one-sided sign-flip permutation on **complete-case** per-instance
+  ECS-adj (all three paradigm components defined), per model×dataset cell, `min_n_for_test`
+  gate as configured, Holm-corrected across the run's cells. This certifies the SAME
+  population as the primary estimand (§3.4). Prior to this amendment the headline test ran
+  on the available-component pool — of the pilot's 211 available-component instances,
+  **126 (60%) have exactly one component and 118 are E-R-only**, so that test was, for
+  more than half its N, a statement about extraction↔rationalization agreement alone.
+- **Family (a2), SENSITIVITY:** the same test on **available-component** ECS-adj (wider N;
+  framed as "above-chance agreement across whichever paradigm pairs were elicitable").
+  Reported beside (a), never as the headline. Its own Holm family.
+- **§3.4 text correction:** see the corrected parenthetical inline above — "complete" means
+  all 3 components defined; it does NOT require all 4 strategies valid, nor does it imply
+  degeneracy-free (**7/72** pilot complete-case instances contain ≥1 degeneracy-guarded
+  pair). The report states this count per run.
+- **Pilot evidence it survives:** complete-case pooled mean **+0.4413** (n=72), pooled
+  sign-flip **p ≈ 1e-4**; per-cell complete-case at 200/cell projects to sst2 88–128, mnli
+  16–56, ag_news 16–104 — every cell clears N=6, three cells stay wide-CI and are flagged.
+
+## §B. Cross-model contrast moved onto the AJ scale (P0.2)
+
+The headline cross-model contrast is now **adjusted-Jaccard** (cross-model side) vs
+**per-instance mean ECS-adj** (within side). The prior raw-Jaccard-vs-legacy-ECS version
+compared same-strategy pairs (similar sizes, high ceiling) against cross-paradigm pairs
+(dissimilar sizes, capped ceiling), so part of the gap was set-size geometry. Recomputed
+paired deltas: ag_news **+0.1064** [−0.001, +0.199], mnli **+0.2010** [+0.081, +0.342],
+sst2 **+0.1536** [−0.013, +0.347]. Direction survives but the effect ~halves and **sst2's
+(and ag_news's) paired CI includes 0** — the "CI entirely above 0 in every dataset"
+framing is retired. The raw table is retained as a set-size-confounded descriptive
+companion only.
+
+## §C. Free-CF sensitivity in AJ form (P0.3)
+
+The plan §3.4-required "also computed in AJ form" free-CF MNAR robustness check now exists
+on the primary scale: complete-case free-CF ECS-adj **n=114, mean +0.4047**, positive in
+all 9 cells (available-component n=176, +0.3723), pooled sign-flip p ≈ 1e-4. The primary
+conclusion survives removing the minimal-edit gate.
+
+## §D. Null support-closure (P1.1) and its HONEST measured impact
+
+`vocab_tokens |= (H ∪ R ∪ CF ∪ RO)` guarantees the hypergeometric urn contains every token
+any strategy selected (64 evidence tokens across 42 instance-strategy combos were previously
+outside it; R:41, CF:8, H:7, RO:8). **Measured impact of the literal union-closure (not the
+plan's original "6 of 9 cells ≤0.001" estimate, which described a different tokenization
+remediation):** the POOLED estimand barely moves (complete-case +0.4413 → **+0.4392**;
+available +0.4742 → **+0.4823**, both <0.01) and each population gains exactly one instance
+as a larger V resolves a borderline degenerate pair. **Per-cell, however, 6/9 complete-case
+cell means move by >0.001** — worst ≈ **−0.055** (deepseek/sst2, N=17) and **+0.062**
+(nova/mnli, N=2) — and the largest single-instance ECS-adj swing is ≈ **0.87** on a small-V
+instance whose pair crosses the degeneracy guard. **No cell changes sign and no tested cell
+changes significance**, so all conclusions are invariant; but this is a genuine
+support-closure change on small-vocab instances, not a cosmetic nudge, and is disclosed as
+such.
+
+## §E. AJ floor & one-sided-test conservativeness (P1.4)
+
+AJ is not bounded below by −1; the floor is −E[J]/(J_max−E[J]), asymmetric by design (pilot
+min pair value ≈ −1.5). The AJ null is therefore left-skewed (bounded above at +1, long
+negative tail), making the one-sided sign-flip test for `mean > 0` **conservative** — a
+documented property. Negative cell means (possible at tiny N) are reported as "not above
+chance at this N", never as a signed below-chance effect size.
+
+## §F. Strata & short-vocab flag re-scoped (P1.2)
+
+Length/vocab strata are now reported on the primary (ECS-adj) scale beside legacy ECS; the
+brevity/short-vocab confounds visible in raw ECS are a property of the deprecated metric and
+are evidence FOR the adjustment. The `short_vocab` flag is retained for provenance only —
+post-P0.1 it flags the majority of SST-2/MNLI instances (median normalized vocab ~9–11), so
+the "conservative-estimate filter" framing is dropped.
